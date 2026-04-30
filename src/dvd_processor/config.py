@@ -11,7 +11,10 @@ class Config:
 
     def _load(self) -> dict:
         if self.config_path.exists():
-            return json.loads(self.config_path.read_text())
+            try:
+                return json.loads(self.config_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return {}
         return {}
 
     def get(self, key: str, default=None):
@@ -19,4 +22,4 @@ class Config:
 
     def set(self, key: str, value):
         self._data[key] = value
-        self.config_path.write_text(json.dumps(self._data, indent=2))
+        self.config_path.write_text(json.dumps(self._data, indent=2), encoding="utf-8")
