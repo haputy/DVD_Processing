@@ -29,7 +29,7 @@ def test_parse_titles_from_output():
 
 def test_scan_calls_makemkvcon(tmp_path):
     scanner = DiscScanner(drive="E:", makemkv_path="makemkvcon")
-    with patch("subprocess.run") as mock_run:
+    with patch("dvd_processor.disc.subprocess.run") as mock_run:
         mock_run.return_value.stdout = SAMPLE_MAKEMKV_OUTPUT
         mock_run.return_value.returncode = 0
         titles = scanner.scan()
@@ -41,7 +41,7 @@ def test_scan_calls_makemkvcon(tmp_path):
 
 def test_rip_calls_makemkvcon_with_title_indices(tmp_path):
     scanner = DiscScanner(drive="E:", makemkv_path="makemkvcon")
-    with patch("subprocess.run") as mock_run:
+    with patch("dvd_processor.disc.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
         scanner.rip(title_indices=[0, 2], output_dir=tmp_path)
     assert mock_run.call_count == 2

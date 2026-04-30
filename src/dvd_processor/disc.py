@@ -20,11 +20,14 @@ class DiscScanner:
         result = subprocess.run(
             [self.makemkv_path, "--robot", "info", f"disc:{self._drive_index()}"],
             stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
+            check=True,
         )
         return self._parse_titles(result.stdout)
 
     def _drive_index(self) -> int:
+        # TODO: resolve self.drive letter to makemkvcon disc index via disc:9999 enumeration
         return 0
 
     def _parse_titles(self, output: str) -> list[DiscTitle]:
