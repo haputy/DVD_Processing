@@ -28,7 +28,7 @@ def fake_season_response():
 
 
 def test_search_returns_show_list(client):
-    with patch("requests.get") as mock_get:
+    with patch("dvd_processor.tmdb.requests.get") as mock_get:
         mock_get.return_value.json.return_value = fake_search_response()
         mock_get.return_value.raise_for_status = MagicMock()
         results = client.search_show("Game of Thrones")
@@ -39,7 +39,7 @@ def test_search_returns_show_list(client):
 
 
 def test_get_episodes_returns_episode_list(client):
-    with patch("requests.get") as mock_get:
+    with patch("dvd_processor.tmdb.requests.get") as mock_get:
         mock_get.return_value.json.return_value = fake_season_response()
         mock_get.return_value.raise_for_status = MagicMock()
         episodes = client.get_season_episodes(tmdb_id=1399, season=1)
@@ -51,7 +51,7 @@ def test_get_episodes_returns_episode_list(client):
 
 def test_get_episodes_none_runtime_returns_none(client):
     response = {"episodes": [{"episode_number": 1, "name": "Ep 1", "runtime": None}]}
-    with patch("requests.get") as mock_get:
+    with patch("dvd_processor.tmdb.requests.get") as mock_get:
         mock_get.return_value.json.return_value = response
         mock_get.return_value.raise_for_status = MagicMock()
         episodes = client.get_season_episodes(tmdb_id=1399, season=1)
