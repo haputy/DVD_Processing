@@ -1,0 +1,8 @@
+pyproject.toml
+src/dvd_processor/__init__.py
+src/dvd_processor.egg-info/PKG-INFO
+src/dvd_processor.egg-info/SOURCES.txt
+src/dvd_processor.egg-info/dependency_links.txt
+src/dvd_processor.egg-info/entry_points.txt
+src/dvd_processor.egg-info/requires.txt
+src/dvd_processor.egg-info/top_level.txt
