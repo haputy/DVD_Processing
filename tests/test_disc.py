@@ -6,13 +6,13 @@ SAMPLE_MAKEMKV_OUTPUT = """\
 MSG:1005,0,1,"MakeMKV v1.17.5 win(x64-release) started",""
 TCOUNT:3
 TINFO:0,2,0,"Title_1"
-TINFO:0,11,0,"00:21:43"
+TINFO:0,9,0,"00:21:43"
 TINFO:0,27,0,"Title_t00.mkv"
 TINFO:1,2,0,"Title_2"
-TINFO:1,11,0,"00:22:05"
+TINFO:1,9,0,"00:22:05"
 TINFO:1,27,0,"Title_t01.mkv"
 TINFO:2,2,0,"Title_3"
-TINFO:2,11,0,"00:05:30"
+TINFO:2,9,0,"00:05:30"
 TINFO:2,27,0,"Title_t02.mkv"
 """
 
