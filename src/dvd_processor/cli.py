@@ -43,7 +43,8 @@ def select_show(client: TmdbClient, show_name: str):
 @click.option("--min-duration", default=10, help="Minimum title duration in minutes")
 @click.option("--transcode", is_flag=True, help="Encode output with HandBrake after ripping")
 @click.option("--dry-run", is_flag=True, help="Scan and match only, do not rip")
-def main(drive, output, min_duration, transcode, dry_run):
+@click.option("--scan-only", is_flag=True, help="List disc titles and durations, skip TMDB and ripping")
+def main(drive, output, min_duration, transcode, dry_run, scan_only):
     """Rip a TV show DVD and name episodes for Jellyfin."""
     config = Config()
 
@@ -51,6 +52,21 @@ def main(drive, output, min_duration, transcode, dry_run):
     output_dir = Path(output or config.get("default_output", "."))
     makemkv_path = config.get("makemkv_path", "makemkvcon")
     handbrake_path = config.get("handbrake_path", "HandBrakeCLI")
+
+    if scan_only:
+        scanner = DiscScanner(drive=drive, makemkv_path=makemkv_path)
+        console.print(f"\nScanning disc in drive [bold]{drive}[/bold]...")
+        titles = scanner.scan()
+        if not titles:
+            console.print("[red]No titles found on disc. Check the drive and try again.[/red]")
+            sys.exit(1)
+        console.print(f"\nFound [bold]{len(titles)}[/bold] titles:\n")
+        for t in titles:
+            h = t.duration_secs // 3600
+            m = (t.duration_secs % 3600) // 60
+            s = t.duration_secs % 60
+            console.print(f"  Title {t.index:2d}  {h:02d}:{m:02d}:{s:02d}  {t.output_filename}")
+        return
 
     api_key = ensure_api_key(config)
     tmdb = TmdbClient(api_key=api_key)
