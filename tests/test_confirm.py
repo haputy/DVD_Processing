@@ -27,6 +27,11 @@ def test_parse_multiple_corrections():
     assert result == {1: 3, 2: 1}
 
 
+def test_parse_malformed_input_skipped():
+    result = parse_corrections("1=abc =3 1=2")
+    assert result == {1: 2}
+
+
 def test_apply_corrections_reassigns_episodes():
     matches = [make_match(0, 1), make_match(1, 2), make_match(2, 3)]
     episodes = [m.episode for m in matches]

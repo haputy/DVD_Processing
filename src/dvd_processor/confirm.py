@@ -13,7 +13,10 @@ def parse_corrections(user_input: str) -> dict[int, int]:
     for part in user_input.strip().split():
         if "=" in part:
             left, right = part.split("=", 1)
-            corrections[int(left)] = int(right)
+            try:
+                corrections[int(left)] = int(right)
+            except ValueError:
+                pass
     return corrections
 
 

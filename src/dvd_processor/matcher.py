@@ -42,6 +42,9 @@ def match_titles_to_episodes(
     results = []
     remaining_episodes = list(episodes)
 
+    # Episodes with None runtime are treated as 0 seconds in the distance calculation,
+    # making them unlikely to match unless no better candidate exists.
+    # The no_runtime_data flag is set per-result when this occurs.
     for title in candidates:
         if not remaining_episodes:
             break
