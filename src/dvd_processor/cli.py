@@ -44,7 +44,10 @@ def select_show(client: TmdbClient, show_name: str):
 @click.option("--transcode", is_flag=True, help="Encode output with HandBrake after ripping")
 @click.option("--dry-run", is_flag=True, help="Scan and match only, do not rip")
 @click.option("--scan-only", is_flag=True, help="List disc titles and durations, skip TMDB and ripping")
-def main(drive, output, min_duration, transcode, dry_run, scan_only):
+@click.option("--show", "show_name", default=None, help="TV show name (skips interactive prompt)")
+@click.option("--season", "season_num", default=None, type=int, help="Season number (skips interactive prompt)")
+@click.option("--yes", "-y", is_flag=True, help="Auto-confirm episode mapping without prompting")
+def main(drive, output, min_duration, transcode, dry_run, scan_only, show_name, season_num, yes):
     """Rip a TV show DVD and name episodes for Jellyfin."""
     config = Config()
 
@@ -77,10 +80,18 @@ def main(drive, output, min_duration, transcode, dry_run, scan_only):
     api_key = ensure_api_key(config)
     tmdb = TmdbClient(api_key=api_key)
 
-    show_name_input = Prompt.ask("Show name")
-    season = IntPrompt.ask("Season number")
+    show_name_input = show_name or Prompt.ask("Show name")
+    season = season_num if season_num is not None else IntPrompt.ask("Season number")
 
-    show = select_show(tmdb, show_name_input)
+    if show_name:
+        results = tmdb.search_show(show_name_input)
+        if not results:
+            console.print(f"[red]No results found for '{show_name_input}'.[/red]")
+            sys.exit(1)
+        show = results[0]
+        console.print(f"Using: [bold]{show.name}[/bold] ({show.year})")
+    else:
+        show = select_show(tmdb, show_name_input)
     console.print(f"\nFetching episode data for [bold]{show.name}[/bold] Season {season}...")
     episodes = tmdb.get_season_episodes(show.tmdb_id, season)
     if not episodes:
@@ -100,16 +111,20 @@ def main(drive, output, min_duration, transcode, dry_run, scan_only):
         titles, episodes, min_duration_secs=min_duration * 60
     )
 
-    while True:
-        show_confirmation_table(matches, season)
-        user_input = Prompt.ask("\nConfirm mapping")
-        if user_input.strip().lower() == "ok":
-            break
-        corrections = parse_corrections(user_input)
-        if corrections:
-            matches = apply_corrections(matches, episodes, corrections)
-        elif user_input.strip():
-            console.print("[yellow]Type 'ok' to confirm or '1=3' to reassign titles.[/yellow]")
+    show_confirmation_table(matches, season)
+    if yes:
+        console.print("\n[green]Auto-confirming mapping (--yes).[/green]")
+    else:
+        while True:
+            user_input = Prompt.ask("\nConfirm mapping")
+            if user_input.strip().lower() == "ok":
+                break
+            corrections = parse_corrections(user_input)
+            if corrections:
+                matches = apply_corrections(matches, episodes, corrections)
+                show_confirmation_table(matches, season)
+            elif user_input.strip():
+                console.print("[yellow]Type 'ok' to confirm or '1=3' to reassign titles.[/yellow]")
 
     if dry_run:
         console.print("[yellow]Dry run — skipping rip.[/yellow]")
