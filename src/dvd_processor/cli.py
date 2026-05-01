@@ -28,11 +28,13 @@ def select_show(client: TmdbClient, show_name: str):
     if not results:
         console.print(f"[red]No results found for '{show_name}'.[/red]")
         sys.exit(1)
+    display = results[:10]
     console.print("\nFound shows:")
-    for i, show in enumerate(results[:10], start=1):
+    for i, show in enumerate(display, start=1):
         console.print(f"  {i}. {show.name} ({show.year})")
     choice = IntPrompt.ask("Select show number", default=1)
-    return results[choice - 1]
+    choice = max(1, min(choice, len(display)))
+    return display[choice - 1]
 
 
 @click.command()
