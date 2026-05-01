@@ -56,9 +56,15 @@ def main(drive, output, min_duration, transcode, dry_run, scan_only):
     if scan_only:
         scanner = DiscScanner(drive=drive, makemkv_path=makemkv_path)
         console.print(f"\nScanning disc in drive [bold]{drive}[/bold]...")
-        titles = scanner.scan()
+        import subprocess as _sp
+        raw = _sp.run(
+            [makemkv_path, "--robot", "info", f"disc:{scanner._drive_index()}"],
+            stdout=_sp.PIPE, stderr=_sp.PIPE, text=True,
+        )
+        titles = scanner._parse_titles(raw.stdout)
         if not titles:
-            console.print("[red]No titles found on disc. Check the drive and try again.[/red]")
+            console.print("[yellow]No titles parsed. Raw MakeMKV output:[/yellow]")
+            console.print(raw.stdout or raw.stderr or "(no output)")
             sys.exit(1)
         console.print(f"\nFound [bold]{len(titles)}[/bold] titles:\n")
         for t in titles:

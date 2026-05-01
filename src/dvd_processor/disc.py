@@ -55,7 +55,7 @@ class DiscScanner:
             idx, attr_id, value = int(m[1]), int(m[2]), m[3]
             if idx not in titles:
                 titles[idx] = {}
-            if attr_id == 11:
+            if attr_id == 9:
                 titles[idx]["duration_secs"] = self._parse_duration(value)
             elif attr_id == 27:
                 titles[idx]["output_filename"] = value
@@ -72,9 +72,15 @@ class DiscScanner:
         return result
 
     def _parse_duration(self, s: str) -> int:
-        parts = s.split(":")
-        h, m, sec = int(parts[0]), int(parts[1]), int(parts[2])
-        return h * 3600 + m * 60 + sec
+        try:
+            parts = s.split(":")
+            if len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            if len(parts) == 2:
+                return int(parts[0]) * 60 + int(parts[1])
+            return 0
+        except (ValueError, TypeError):
+            return 0
 
     def rip(self, title_indices: list[int], output_dir: Path) -> None:
         output_dir = Path(output_dir)
