@@ -81,10 +81,13 @@ def main(drive, output, min_duration, transcode, dry_run):
     while True:
         show_confirmation_table(matches, season)
         user_input = Prompt.ask("\nConfirm mapping")
-        corrections = parse_corrections(user_input)
-        if not corrections:
+        if user_input.strip().lower() == "ok":
             break
-        matches = apply_corrections(matches, episodes, corrections)
+        corrections = parse_corrections(user_input)
+        if corrections:
+            matches = apply_corrections(matches, episodes, corrections)
+        elif user_input.strip():
+            console.print("[yellow]Type 'ok' to confirm or '1=3' to reassign titles.[/yellow]")
 
     if dry_run:
         console.print("[yellow]Dry run — skipping rip.[/yellow]")

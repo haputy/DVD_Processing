@@ -19,6 +19,8 @@ def rename_ripped_files(
 ) -> None:
     output_dir = Path(output_dir)
     for match in matches:
+        if not match.title.output_filename:
+            continue
         src = output_dir / match.title.output_filename
         if not src.exists():
             continue

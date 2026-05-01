@@ -33,9 +33,10 @@ def test_scan_calls_makemkvcon(tmp_path):
         mock_run.return_value.stdout = SAMPLE_MAKEMKV_OUTPUT
         mock_run.return_value.returncode = 0
         titles = scanner.scan()
-    mock_run.assert_called_once()
-    call_args = mock_run.call_args[0][0]
-    assert "info" in call_args
+    # Two calls: one for disc:9999 enumeration in _drive_index(), one for the actual scan
+    assert mock_run.call_count == 2
+    info_call_args = mock_run.call_args_list[1][0][0]
+    assert "info" in info_call_args
     assert len(titles) == 3
 
 
@@ -44,7 +45,10 @@ def test_rip_calls_makemkvcon_with_title_indices(tmp_path):
     with patch("dvd_processor.disc.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
         scanner.rip(title_indices=[0, 2], output_dir=tmp_path)
-    assert mock_run.call_count == 2
-    first_call_args = mock_run.call_args_list[0][0][0]
-    assert "mkv" in first_call_args
-    assert "0" in first_call_args
+    # Four calls: one disc:9999 per title_index (_drive_index called each loop), plus one mkv per index
+    # Actually _drive_index is called once per rip() call, producing 1 enum + 2 mkv = 3 total... but
+    # rip() calls _drive_index inside the for loop (once per title). With 2 titles: 2 enum + 2 mkv = 4.
+    assert mock_run.call_count == 4
+    mkv_calls = [c for c in mock_run.call_args_list if "mkv" in c[0][0]]
+    assert len(mkv_calls) == 2
+    assert "0" in mkv_calls[0][0][0]

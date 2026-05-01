@@ -27,7 +27,23 @@ class DiscScanner:
         return self._parse_titles(result.stdout)
 
     def _drive_index(self) -> int:
-        # TODO: resolve self.drive letter to makemkvcon disc index via disc:9999 enumeration
+        result = subprocess.run(
+            [self.makemkv_path, "--robot", "info", "disc:9999"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        drive_upper = self.drive.upper().rstrip("\\")
+        for line in result.stdout.splitlines():
+            if not line.startswith("DRV:"):
+                continue
+            parts = line.split(",")
+            if len(parts) < 6:
+                continue
+            index = int(parts[0].split(":")[1])
+            letter = parts[5].strip('"').upper().rstrip("\\")
+            if letter == drive_upper:
+                return index
         return 0
 
     def _parse_titles(self, output: str) -> list[DiscTitle]:

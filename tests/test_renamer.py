@@ -41,3 +41,16 @@ def test_rename_ripped_files(tmp_path):
     assert (tmp_path / "My Show - S01E01 - Pilot.mkv").exists()
     assert (tmp_path / "My Show - S01E02 - Episode Two.mkv").exists()
     assert not (tmp_path / "Title_t00.mkv").exists()
+
+
+def test_rename_skips_missing_output_filename(tmp_path):
+    match = MatchResult(
+        title=DiscTitle(index=0, duration_secs=1320, output_filename=""),
+        episode=TmdbEpisode(number=1, title="Pilot", runtime_secs=1320),
+        difference_secs=0,
+        low_confidence=False,
+        no_runtime_data=False,
+    )
+    rename_ripped_files("My Show", season=1, matches=[match], output_dir=tmp_path)
+    # No files should be created or renamed, no exception raised
+    assert list(tmp_path.iterdir()) == []
