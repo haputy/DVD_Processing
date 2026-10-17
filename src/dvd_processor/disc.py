@@ -1,7 +1,11 @@
+import os
 import subprocess
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
+
+MAKEMKV_DEFAULT = r"C:\Program Files (x86)\MakeMKV\makemkvcon64.exe"
 
 
 @dataclass
@@ -11,12 +15,46 @@ class DiscTitle:
     output_filename: str = ""
 
 
+def resolve_makemkv_path(config=None) -> str:
+    """Config key makemkv_path, else the usual install, else makemkvcon on PATH."""
+    configured = config.get("makemkv_path") if config is not None else None
+    if configured:
+        return configured
+    return MAKEMKV_DEFAULT if os.path.exists(MAKEMKV_DEFAULT) else "makemkvcon"
+
+
+def parse_disc_label(output: str) -> str:
+    """The disc's volume name from makemkvcon's CINFO lines (32, else the disc name, 2)."""
+    found = {}
+    for line in output.splitlines():
+        m = re.match(r'CINFO:(\d+),\d+,"(.*)"', line)
+        if m:
+            found[int(m[1])] = m[2].strip()
+    return found.get(32) or found.get(2) or ""
+
+
+def volume_label(drive: str) -> str:
+    """The Windows volume label of a drive, or "" if it cannot be read."""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(261)
+        root = drive.rstrip("\\/") + "\\"
+        ok = ctypes.windll.kernel32.GetVolumeInformationW(root, buf, len(buf), None, None, None, None, 0)
+        return buf.value.strip() if ok else ""
+    except Exception:
+        return ""
+
+
 class DiscScanner:
     def __init__(self, drive: str, makemkv_path: str = "makemkvcon"):
         self.drive = drive
         self.makemkv_path = makemkv_path
 
     def scan(self) -> list[DiscTitle]:
+        return self.scan_with_label()[0]
+
+    def scan_with_label(self) -> tuple[list[DiscTitle], str]:
+        """The disc's titles and its label (from CINFO, else the drive's volume label)."""
         result = subprocess.run(
             [self.makemkv_path, "--robot", "info", f"disc:{self._drive_index()}"],
             stdout=subprocess.PIPE,
@@ -24,7 +62,9 @@ class DiscScanner:
             text=True,
             check=True,
         )
-        return self._parse_titles(result.stdout)
+        self.last_output = result.stdout
+        label = parse_disc_label(result.stdout) or volume_label(self.drive)
+        return self._parse_titles(result.stdout), label
 
     def _drive_index(self) -> int:
         result = subprocess.run(

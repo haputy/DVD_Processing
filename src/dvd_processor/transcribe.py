@@ -127,14 +127,18 @@ def transcript_path(disc: Path, key: str) -> Path:
     return Path(disc) / TRANSCRIPTS_DIR / f"{key}.txt"
 
 
-def cached_transcript(disc: Path, path: Path) -> Optional[Path]:
-    """The cached transcript for this title under its key, or under the file's own stem
-    (an older cache made from the MKV name), if either exists."""
+def _cached(cache_dir: Path, path: Path) -> Optional[Path]:
     for name in dict.fromkeys([title_key(path), Path(path).stem]):
-        p = transcript_path(disc, name)
+        p = Path(cache_dir) / f"{name}.txt"
         if p.exists():
             return p
     return None
+
+
+def cached_transcript(disc: Path, path: Path) -> Optional[Path]:
+    """The cached transcript for this title under its key, or under the file's own stem
+    (an older cache made from the MKV name), if either exists."""
+    return _cached(Path(disc) / TRANSCRIPTS_DIR, path)
 
 
 def transcribe_file(path: Path, model=None) -> str:
@@ -143,37 +147,50 @@ def transcribe_file(path: Path, model=None) -> str:
     return " ".join(s.text.strip() for s in segments)
 
 
-def transcribe_disc(disc: Path,
-                    get_duration: Callable[[Path], float] = duration,
-                    model_getter: Callable[[], object] = get_model,
-                    progress: Optional[Callable[[str], None]] = None) -> list[TitleTranscript]:
-    """Transcribe what is missing and return every title on the disc, in title order.
+def transcribe_files(files: list[Path], cache_dir: Path, disc: str,
+                     get_duration: Callable[[Path], float] = duration,
+                     model_getter: Callable[[], object] = get_model,
+                     progress: Optional[Callable[[str], None]] = None) -> list[TitleTranscript]:
+    """Transcribe what is missing among files, caching <cache_dir>/<title key>.txt, and
+    return a TitleTranscript for each, in the order given, labelled with disc.
 
     Titles under MIN_TRANSCRIBE_SECONDS come back with empty text; a title whose duration
     cannot be read (0) is transcribed anyway. The model is only loaded when something needs
-    transcribing. TitleTranscript.stem is the title key ("A1 T00").
+    transcribing.
     """
-    disc = Path(disc)
+    cache_dir = Path(cache_dir)
     out = []
-    for f in title_files(disc):
+    for f in files:
+        f = Path(f)
         try:
             seconds = get_duration(f)
         except Exception as exc:
             log.warning("could not read the length of %s (%s), transcribing anyway", f, exc)
             seconds = 0.0
         key = title_key(f)
-        txt = transcript_path(disc, key)
-        cached = cached_transcript(disc, f)
+        cached = _cached(cache_dir, f)
         text = ""
         if cached is not None:
             text = cached.read_text(encoding="utf-8")
         elif seconds == 0 or seconds >= MIN_TRANSCRIBE_SECONDS:
+            if progress:
+                progress(f"transcribing {Path(disc).name}/{key} ({seconds / 60:.1f} min)")
             text = transcribe_file(f, model_getter())
+            txt = cache_dir / f"{key}.txt"
             txt.parent.mkdir(parents=True, exist_ok=True)
             tmp = txt.with_suffix(".txt.part")
             tmp.write_text(text, encoding="utf-8")
             tmp.replace(txt)
-            if progress:
-                progress(f"{disc.name}/{key} {seconds / 60:.1f} min transcribed")
-        out.append(TitleTranscript(str(disc), key, round(seconds, 1), text))
+        out.append(TitleTranscript(str(disc), key, round(seconds, 1), text, str(f)))
     return out
+
+
+def transcribe_disc(disc: Path,
+                    get_duration: Callable[[Path], float] = duration,
+                    model_getter: Callable[[], object] = get_model,
+                    progress: Optional[Callable[[str], None]] = None) -> list[TitleTranscript]:
+    """Transcribe what is missing on a disc folder and return every title, in title order.
+    Transcripts are cached in <disc>/transcripts. TitleTranscript.stem is the title key."""
+    disc = Path(disc)
+    return transcribe_files(title_files(disc), disc / TRANSCRIPTS_DIR, str(disc),
+                            get_duration=get_duration, model_getter=model_getter, progress=progress)

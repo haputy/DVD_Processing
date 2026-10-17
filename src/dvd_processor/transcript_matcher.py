@@ -37,6 +37,7 @@ class TitleTranscript:
     stem: str          # title file stem, e.g. "A1 T00"
     seconds: float     # 0 when unknown
     text: str
+    path: str = ""     # the video file the transcript came from
 
 
 @dataclass
