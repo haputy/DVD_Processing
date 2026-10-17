@@ -16,10 +16,18 @@ HANDBRAKE_VERSION = "1.9.2"
 
 
 def default_handbrake_path() -> str:
-    """The 1.9.2 install under %LOCALAPPDATA%\\HandBrakeCLI if it is there, else HandBrakeCLI on PATH."""
+    """The 1.9.2 install under ~/Tools/HandBrakeCLI, else under %LOCALAPPDATA%\\HandBrakeCLI,
+    else HandBrakeCLI on PATH.
+
+    ~/Tools comes first because Microsoft Store Python sees a private, redirected copy of
+    AppData\\Local, so a HandBrakeCLI unpacked there from PowerShell is invisible to it (the
+    first real rip, 17 October 2026, ripped fine and then could not find the encoder).
+    """
+    candidates = [Path.home() / "Tools" / "HandBrakeCLI" / HANDBRAKE_VERSION / "HandBrakeCLI.exe"]
     local = os.environ.get("LOCALAPPDATA")
     if local:
-        p = Path(local) / "HandBrakeCLI" / HANDBRAKE_VERSION / "HandBrakeCLI.exe"
+        candidates.append(Path(local) / "HandBrakeCLI" / HANDBRAKE_VERSION / "HandBrakeCLI.exe")
+    for p in candidates:
         if p.exists():
             return str(p)
     return "HandBrakeCLI"

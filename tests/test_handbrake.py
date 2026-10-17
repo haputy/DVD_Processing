@@ -35,21 +35,42 @@ def test_mp4_path_goes_in_mp4_subfolder(tmp_path):
     assert mp4_path(tmp_path / "A1_t03.mkv") == tmp_path / "MP4" / "A1 T03.mp4"
 
 
-def test_default_path_prefers_localappdata_install(tmp_path, monkeypatch):
-    exe = tmp_path / "HandBrakeCLI" / "1.9.2" / "HandBrakeCLI.exe"
+@pytest.fixture
+def no_real_installs(tmp_path, monkeypatch):
+    """Point home and LOCALAPPDATA at empty temp folders, so Andy's real install is not found."""
+    home, local = tmp_path / "home", tmp_path / "local"
+    home.mkdir(); local.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    return home, local
+
+
+def put_exe(base):
+    exe = base / "HandBrakeCLI" / "1.9.2" / "HandBrakeCLI.exe"
     exe.parent.mkdir(parents=True)
     exe.write_text("")
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    return exe
+
+
+def test_default_path_finds_localappdata_install(no_real_installs):
+    _, local = no_real_installs
+    exe = put_exe(local)
     assert default_handbrake_path() == str(exe)
 
 
-def test_default_path_falls_back_to_path(tmp_path, monkeypatch):
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+def test_default_path_prefers_tools_over_localappdata(no_real_installs):
+    # Store Python cannot see AppData\Local installs made outside it, so ~/Tools wins.
+    home, local = no_real_installs
+    put_exe(local)
+    exe = put_exe(home / "Tools")
+    assert default_handbrake_path() == str(exe)
+
+
+def test_default_path_falls_back_to_path(no_real_installs):
     assert default_handbrake_path() == "HandBrakeCLI"
 
 
-def test_config_key_wins(tmp_path, monkeypatch):
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+def test_config_key_wins(no_real_installs):
     assert resolve_handbrake_path({"handbrake_path": "D:/hb.exe"}) == "D:/hb.exe"
     assert resolve_handbrake_path({}) == "HandBrakeCLI"
 
