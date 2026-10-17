@@ -166,10 +166,10 @@ def rip_titles(scanner, indices: list[int], folder: Path,
     folder = Path(folder)
     result = RipResult()
     for n, idx in enumerate(indices, start=1):
-        if progress:
-            progress(f"Ripping title {idx} ({n} of {len(indices)})")
         before = {p.name for p in folder.glob("*.mkv")}
         try:
+            if progress:  # inside the try: a stop between titles is handled like one mid-title
+                progress(f"Ripping title {idx} ({n} of {len(indices)})")
             scanner.rip([idx], folder)
         except (subprocess.CalledProcessError, OSError, KeyboardInterrupt) as exc:
             result.failed = idx

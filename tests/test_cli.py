@@ -2,6 +2,7 @@
 replaced by fakes, and every folder under tmp_path."""
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -269,3 +270,35 @@ def test_resume_finishes_an_interrupted_rename(env, monkeypatch):
     assert "2 moved" in result.output
     assert b.read_text() == "5" and a.read_text() == "6"
     assert "No unfinished renames" in run(["resume"]).output
+
+
+def test_match_encodes_titles_without_an_mp4_first(env, monkeypatch):
+    monkeypatch.setattr(cli, "_transcriber", lambda: fake_transcribe_disc)
+    d = _disc(env, "SEASIDE_D1", ["lighthouse", "bakery", "circus"])
+    (d / "MP4" / "A1 T02.mp4").unlink()  # this title was ripped but never encoded
+    done = []
+
+    class Enc:
+        def encode(self, src, out):
+            done.append(src.name)
+            out.write_text("circus")
+    monkeypatch.setattr(cli, "make_encoder", lambda config: Enc())
+    result = run(["match", "--show", "Seaside", "--season", "1", "--yes", "--dest-root", str(env / "nas")])
+    assert done == ["A1_t02.mkv"]
+    assert "1 titles have no MP4 yet, encoding them first" in result.output
+    assert ".mkv" not in "".join(p.name for p in (env / "nas").rglob("*"))
+
+
+def test_match_stops_when_an_encode_fails(env, monkeypatch):
+    monkeypatch.setattr(cli, "_transcriber", lambda: fake_transcribe_disc)
+    d = _disc(env, "SEASIDE_D1", ["lighthouse"])
+    (d / "MP4" / "A1 T00.mp4").unlink()
+
+    class Broken:
+        def encode(self, src, out):
+            raise subprocess.CalledProcessError(1, ["HandBrakeCLI"])
+    monkeypatch.setattr(cli, "make_encoder", lambda config: Broken())
+    result = CliRunner().invoke(cli.main, ["match", "--show", "Seaside", "--yes", "--dest-root", str(env / "nas")])
+    assert result.exit_code == 1
+    assert "Encoding SEASIDE_D1 failed" in result.output and "Nothing was matched or copied" in result.output
+    assert not (env / "nas").exists()

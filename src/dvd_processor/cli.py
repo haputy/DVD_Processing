@@ -20,7 +20,7 @@ import click
 from rich.console import Console
 from rich.prompt import Confirm, IntPrompt, Prompt
 
-from dvd_processor import workflow
+from dvd_processor import app_logic, workflow
 from dvd_processor.config import Config
 from dvd_processor.disc import DiscScanner, parse_disc_label, resolve_makemkv_path
 from dvd_processor.discinfo import disc_folders_for_show, rip_root, write_disc_info
@@ -341,6 +341,12 @@ def match(show_name, tmdb_id, season, yes, dest_root):
                       f"Rip with 'dvd-process rip' or register with 'dvd-process add'.[/red]")
         sys.exit(1)
     console.print("Discs: " + ", ".join(f.name for f in folders))
+    if any(workflow.missing_encodes(f) for f in folders):
+        try:
+            app_logic.encode_missing(folders, make_encoder(config), progress=say)
+        except app_logic.UserError as exc:
+            console.print(f"[red]{exc}[/red]")
+            sys.exit(1)
     console.print("Fetching episodes (TMDB, plus Wikipedia summaries)...")
     all_episodes = build_episodes(client, show.tmdb_id, show.name)
     episodes = workflow.limit_to_season(all_episodes, season)
@@ -361,6 +367,8 @@ def match(show_name, tmdb_id, season, yes, dest_root):
         console.print("Nothing to copy.")
         return
     console.print(f"{len(items)} episode(s) to copy under [bold]{root}[/bold], e.g. {items[0].dest}")
+    if app_logic.mkv_note(items):
+        console.print(f"[yellow]{app_logic.mkv_note(items)}[/yellow]")
     if not confirm("Copy now?", yes):
         return
     log_action(f"match {show.name}: copying {len(items)} to {root}")

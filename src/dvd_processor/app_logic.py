@@ -398,12 +398,42 @@ def surplus_note(titles, episodes) -> list[str]:
     return []
 
 
+def encode_missing(folders: list[Path], encoder, progress: Progress = _quiet) -> int:
+    """Encode every title that has an MKV but no MP4 yet, so what is matched and copied is
+    the MP4. Raises UserError naming the disc when an encode fails (a stop is passed on)."""
+    total = 0
+    for f in folders:
+        todo = workflow.missing_encodes(f)
+        if not todo:
+            continue
+        if encoder is None:
+            raise UserError(f"{f.name} has {len(todo)} titles with no MP4 and no encoder to make them.")
+        progress(f"{f.name}: {len(todo)} titles have no MP4 yet, encoding them first")
+        try:
+            total += encode_folder(f, encoder, progress)
+        except Exception as exc:
+            raise UserError(f"Encoding {f.name} failed: {friendly_error(exc)} Nothing was matched or "
+                            f"copied.") from exc
+    return total
+
+
+def mkv_note(items) -> str:
+    """'' or a warning that some of the files to copy are MKV rips, not MP4 encodes."""
+    mkv = [i for i in items if str(i.source).lower().endswith(".mkv")]
+    if not mkv:
+        return ""
+    return (f"{len(mkv)} of these {'are MKV rips' if len(mkv) > 1 else 'is an MKV rip'}, not MP4 "
+            f"encodes, and will be copied as MKV: " + ", ".join(Path(i.source).name for i in mkv[:5])
+            + (" ..." if len(mkv) > 5 else ""))
+
+
 def run_match(show: Show, season: Optional[int], rip_root: Path,
               load_episodes: Callable[[Show], tuple[list[Episode], list[str]]],
-              transcriber, matcher, progress: Progress = _quiet) -> MatchResult:
+              transcriber, matcher, progress: Progress = _quiet, encoder=None) -> MatchResult:
     """The CLI match command up to the review: the show's complete disc folders (season
-    filter if set), transcribe what is missing, match, and the table's rows.
-    load_episodes(show) returns (every episode, the regulars' names)."""
+    filter if set), encode any title still without an MP4, transcribe what is missing,
+    match, and the table's rows. load_episodes(show) returns (every episode, the regulars'
+    names)."""
     notes = []
     folders = disc_folders_for_show(
         show.name, show.tmdb_id, rip_root,
@@ -423,6 +453,7 @@ def run_match(show: Show, season: Optional[int], rip_root: Path,
     if not episodes:
         raise UserError(f"TMDB has no episodes for {show.name}"
                         + (f" season {season}." if season else "."))
+    encode_missing(folders, encoder, progress)
     progress("Checking transcripts...")
     titles = workflow.gather_titles(folders, transcriber, progress=transcribe_progress(progress))
     extra = surplus_note(titles, episodes)
@@ -481,6 +512,7 @@ def check_warning(rows: list[ReviewRow]) -> str:
 def copy_confirm_text(items, root: str, rows: list[ReviewRow]) -> str:
     return (f"Copy {len(items)} episodes to\n{root}?\n\nFor example:\n{items[0].dest}\n\n"
             f"Nothing already there is overwritten, and the originals in C:\\Video stay."
+            + (f"\n\n{mkv_note(items)}" if mkv_note(items) else "")
             + check_warning(rows))
 
 

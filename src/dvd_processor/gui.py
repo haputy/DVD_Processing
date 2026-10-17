@@ -172,6 +172,8 @@ class App(ctk.CTk):
         self._queue: queue.Queue = queue.Queue()
         self._busy: Optional[str] = None
         self._job: Optional[ProcessRunner] = None   # the busy task's runner, for Cancel
+        self._thread: Optional[threading.Thread] = None  # the busy task's worker
+        self._cancellable = True
         self._client = None
         self._shows: dict[str, al.Show] = {}
         self._unfinished: list = []
@@ -340,7 +342,7 @@ class App(ctk.CTk):
                 except queue.Empty:
                     break
                 if busy:
-                    self._busy, self._job = None, None
+                    self._busy, self._job, self._thread, self._cancellable = None, None, None, True
                 try:
                     if kind == "log":
                         self.say(what)
@@ -374,18 +376,20 @@ class App(ctk.CTk):
         messagebox.showinfo(TITLE, f"{what} cancelled." + (f"\n\n{detail}" if detail else ""), parent=self)
 
     def _run(self, what: str, work: Work, done: Callable[[object], None], busy: bool = True,
-             failed: Optional[Callable[[], None]] = None) -> bool:
+             failed: Optional[Callable[[], None]] = None, cancellable: bool = True) -> bool:
         """Run work(progress, job) in a thread, then done(result) on the Tk loop; on an error
         or a cancel, failed() first. busy disables the buttons meanwhile and makes Cancel stop
-        this job; quick background lookups pass busy=False."""
+        this job; quick background lookups pass busy=False. A rename passes cancellable=False:
+        once started it finishes."""
         job = ProcessRunner()
         if busy:
             if self._busy:
                 messagebox.showinfo(TITLE, f"Wait for {self._busy.lower()} to finish, or click Cancel.",
                                     parent=self)
                 return False
-            self._busy, self._job = what, job
-            self._refresh_buttons()
+            self._busy, self._job, self._cancellable = what, job, cancellable
+            if not cancellable:
+                self.say(f"{what}: a rename finishes once started, so Cancel is off until it is done.")
 
         def progress(msg: str):
             job.check()  # every progress line is a place a Cancel takes effect
@@ -402,7 +406,11 @@ class App(ctk.CTk):
                 self._queue.put(("error", what, (failed, exc), busy))
             else:
                 self._queue.put(("done", what, (done, result), busy))
-        threading.Thread(target=target, name=what, daemon=True).start()
+        thread = threading.Thread(target=target, name=what, daemon=True)
+        if busy:
+            self._thread = thread
+            self._refresh_buttons()
+        thread.start()
         return True
 
     def report_callback_exception(self, exc, val, tb):
@@ -420,7 +428,7 @@ class App(ctk.CTk):
         for b in (self.scan_button, self.match_button, self.fix_button):
             state(b, picked)
         state(self.rip_button, picked and self.rip_plan is not None and self.rip_plan.can_rip(self.again_var.get()))
-        self.cancel_button.configure(state="disabled" if idle else "normal")
+        self.cancel_button.configure(state="normal" if not idle and self._cancellable else "disabled")
         self.busy_label.configure(text="" if idle else f"{self._busy}...")
         self.match_table.locked = self.fix_table.locked = not idle
 
@@ -485,7 +493,7 @@ class App(ctk.CTk):
 
     def _cancel(self):
         job, what = self._job, self._busy
-        if job is None or what is None:
+        if job is None or what is None or not self._cancellable:
             return
         if not messagebox.askyesno(TITLE, f"Stop {what.lower()}?\n\n{STOP_EFFECT}", parent=self):
             return
@@ -495,12 +503,25 @@ class App(ctk.CTk):
 
     def _on_close(self):
         if self._busy:
-            if not messagebox.askyesno(
-                    TITLE, f"Still working ({self._busy.lower()}). Closing stops it now.\n\n{STOP_EFFECT}\n\n"
-                           f"Close anyway?", parent=self):
+            if self._cancellable:
+                question = f"Still working ({self._busy.lower()}). Closing stops it now.\n\n{STOP_EFFECT}"
+            else:
+                question = (f"A rename on the NAS is under way. Closing now may leave it half done; the "
+                            f"banner's Resume button finishes it next time.")
+            if not messagebox.askyesno(TITLE, question + "\n\nClose anyway?", parent=self):
                 return
-            if self._job is not None:
+            thread = self._thread
+            if self._job is not None and self._cancellable:
                 self._job.cancel()  # kills makemkvcon or HandBrakeCLI; the job object would too
+            if thread is not None:
+                thread.join(timeout=5)  # let the clean-up (.failed, .part, .encoding.mp4) finish
+                if thread.is_alive():
+                    log.warning("closing while %s was still stopping", self._busy)
+                    messagebox.showwarning(
+                        TITLE, "It has not finished stopping, so the window closes anyway. A half-written "
+                               "file (.encoding.mp4 or .part) may be left behind, a stopped rip's disc "
+                               "folder stays marked incomplete, and a rename can be finished with Resume.",
+                        parent=self)
         self.destroy()
 
     # ---- startup -----------------------------------------------------------------------------
@@ -547,7 +568,7 @@ class App(ctk.CTk):
                      f".renaming" + "".join(f"\n  {t} (its destination exists)" for t in report.left_as_temp))
             self._check_unfinished()
         self._run("Resuming the rename", lambda p, j: resume_renaming(plan), done,
-                  failed=self._check_unfinished)
+                  failed=self._check_unfinished, cancellable=False)
 
     # ---- top bar -----------------------------------------------------------------------------
 
@@ -575,14 +596,14 @@ class App(ctk.CTk):
                 self._set_show_menu(NOTHING_FOUND)
                 self.say(f"TMDB has nothing called {name}.")
                 return
+            pick = al.auto_pick(results, name)  # on every result, before the list is cut to 15
             shows = [al.Show(r.tmdb_id, r.name, r.year) for r in results[:15]]
             self._shows = {al.show_choice(s): s for s in shows}
             labels = list(self._shows)
-            pick = al.auto_pick(shows, name)
             if pick is None:
                 prompt = al.pick_prompt(len(shows))
                 self._set_show_menu(prompt, [prompt] + labels)
-                self.say(f"TMDB found {len(shows)} shows for {name}. Pick the right one from the list "
+                self.say(f"TMDB found {len(results)} shows for {name}. Pick the right one from the list "
                          f"(the year and TMDB id tell them apart).")
             else:
                 self._set_show_menu(labels[pick], labels)
@@ -680,6 +701,7 @@ class App(ctk.CTk):
             return
         root = rip_root(self.config_)
         load = self._load_episodes(client)
+        handbrake = resolve_handbrake_path(self.config_)
         self.match_result = None
         self.match_table.clear()
         self.say(f"Matching {show.name}" + (f" season {season}" if season else "") + "...")
@@ -687,7 +709,9 @@ class App(ctk.CTk):
         def work(progress, job):
             from dvd_processor.transcribe import transcribe_disc
             from dvd_processor.transcript_matcher import match_transcripts
-            return al.run_match(show, season, root, load, transcribe_disc, match_transcripts, progress)
+            encoder = HandBrakeEncoder(handbrake, quiet=True, runner=job.run)
+            return al.run_match(show, season, root, load, transcribe_disc, match_transcripts, progress,
+                                encoder=encoder)
 
         def done(result):
             self.match_result = result
@@ -820,7 +844,8 @@ class App(ctk.CTk):
             self._check_unfinished()
             messagebox.showinfo(TITLE, text, parent=self)
         # a stopped rename leaves a plan to resume, so the banner is checked either way
-        self._run("Renaming", lambda p, j: al.run_rename(r, p), done, failed=self._check_unfinished)
+        self._run("Renaming", lambda p, j: al.run_rename(r, p), done, failed=self._check_unfinished,
+                  cancellable=False)
 
 
 def _setup_logging():

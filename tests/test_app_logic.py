@@ -409,3 +409,93 @@ def test_run_copy_stops_when_asked(tmp_path, tmp_config_dir):
         al.run_copy(items, should_stop=lambda: True)
     assert not list((tmp_path / "nas").rglob("*.part"))
     assert not Path(items[0].dest).exists()
+
+
+# ---- second review: stop between titles, encode before matching, MKV warning ----------------
+
+def test_auto_pick_sees_a_second_exact_name_beyond_the_first_15():
+    results = [SHOW] + [al.Show(i, f"Other {i}", "") for i in range(20)] + [al.Show(77, "NewsRadio", "2030")]
+    assert al.auto_pick(results, "NewsRadio") is None
+    assert al.auto_pick(results[:15], "NewsRadio") == 0  # why it must run before the cut
+
+
+def test_a_stop_between_titles_is_handled_like_one_mid_title(tmp_path, tmp_config_dir):
+    from dvd_processor.procs import Cancelled
+    plan = al.plan_rip(_scan(), "D1", SHOW, tmp_path)
+    calls = []
+
+    def progress(msg):
+        if msg.startswith("Ripping title"):
+            calls.append(msg)
+            if len(calls) == 3:  # Cancel pressed while title 1 was finishing
+                raise Cancelled()
+    with pytest.raises(Cancelled) as e:
+        al.run_rip(plan, FakeScanner(), FakeEncoder(), None, SHOW, None, progress=progress)
+    msg = str(e.value)
+    assert "Finished titles: [0, 1]" in msg and "Rip again" in msg and "marked incomplete" in msg
+    assert not read_disc_info(tmp_path / "D1").complete
+    assert sorted(p.name for p in (tmp_path / "D1").glob("*.mkv")) == ["A1_t00.mkv", "A1_t01.mkv"]
+
+
+def _mkv_disc(root, name, n=2, encoded=0):
+    d = root / name
+    write_disc_info(d, "NewsRadio", 3968)
+    for i in range(n):
+        (d / f"A1_t0{i}.mkv").write_text("rip")
+    (d / "MP4").mkdir()
+    for i in range(encoded):
+        (d / "MP4" / f"A1 T0{i}.mp4").write_text("mp4")
+    return d
+
+
+def test_encode_missing_encodes_only_what_has_no_mp4(tmp_path, tmp_config_dir):
+    d1 = _mkv_disc(tmp_path, "D1", 2, encoded=1)
+    d2 = _mkv_disc(tmp_path, "D2", 1, encoded=1)
+    enc, said = FakeEncoder(), []
+    assert al.encode_missing([d1, d2], enc, said.append) == 1
+    assert enc.done == ["A1_t01.mkv"]
+    assert said == ["D1: 1 titles have no MP4 yet, encoding them first", "Encoding 1 of 1 (A1_t01.mkv)"]
+    assert al.encode_missing([d1, d2], None) == 0  # nothing left to do needs no encoder
+
+
+def test_encode_missing_failure_stops_with_the_disc_named(tmp_path, tmp_config_dir):
+    d1 = _mkv_disc(tmp_path, "D1", 1)
+
+    class Broken:
+        def encode(self, src, out):
+            raise subprocess.CalledProcessError(2, ["HandBrakeCLI.exe"])
+    with pytest.raises(al.UserError) as e:
+        al.encode_missing([d1], Broken())
+    assert "Encoding D1 failed: HandBrakeCLI stopped with an error (exit code 2)." in str(e.value)
+    assert "Nothing was matched or copied" in str(e.value)
+    with pytest.raises(al.UserError):
+        al.encode_missing([d1], None)
+
+
+def test_run_match_encodes_before_transcribing(tmp_path, tmp_config_dir):
+    _mkv_disc(tmp_path, "D1", 1)
+    order = []
+
+    class Enc(FakeEncoder):
+        def encode(self, src, out):
+            order.append("encode")
+            super().encode(src, out)
+
+    def transcriber(folder, progress):
+        order.append("transcribe")
+        return [TitleTranscript(str(folder), "A1 T00", 1320, "w", str(folder / "MP4" / "A1 T00.mp4"))]
+
+    def matcher(titles, episodes, regulars):
+        return [TranscriptMatch(titles[0], episodes[0], 0.2, 0.05, "")]
+    al.run_match(SHOW, None, tmp_path, lambda s: (EPS, []), transcriber, matcher, encoder=Enc())
+    assert order == ["encode", "transcribe"]
+
+
+def test_copying_an_mkv_is_said_first():
+    from dvd_processor.workflow import CopyItem
+    mp4 = CopyItem(1, "C:/Video/D1/MP4/A1 T00.mp4", "//nas/TV/S/Season 1/S S01 E01.mp4")
+    mkv = CopyItem(2, "C:/Video/D1/A1_t01.mkv", "//nas/TV/S/Season 1/S S01 E02.mkv")
+    assert al.mkv_note([mp4]) == ""
+    note = al.mkv_note([mp4, mkv])
+    assert "1 of these is an MKV rip" in note and "A1_t01.mkv" in note
+    assert note in al.copy_confirm_text([mp4, mkv], "//nas/TV", [])
