@@ -336,7 +336,7 @@ class DVDProcessorApp(ctk.CTk):
             season = int(self._season_var.get() or "1")
             show = self._show_var.get()
             if dry_run:
-                self._log("Dry run — files that would be created:")
+                self._log("Dry run: files that would be created:")
                 for m in self._matches:
                     self._log(f"  {build_output_filename(show, season, m)}")
                 self._log("Dry run complete.")

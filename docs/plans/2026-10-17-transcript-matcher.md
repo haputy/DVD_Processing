@@ -56,27 +56,39 @@ rest done.
 ## The CLI (built 17 October 2026)
 
 `dvd-process <command>`, a click group. Commands that change files ask first unless given
-`--yes`, and log every step to `~/.dvd_processor/actions.log`.
+`--yes`, and log every step to `~/.dvd_processor/actions.log`. `--yes` never acts on doubt:
+it stops, with nothing copied or renamed, when any row that would act is flagged CHECK, when
+two rows share an episode, when titles outnumber episodes by more than 2, or when the TMDB
+search is ambiguous (the first result must be the only exact name match).
 
 - `scan [--drive E:]`: list the titles on the disc in the drive, with the disc label.
-- `rip --show NAME [--drive E:] [--yes]`: pick the show on TMDB, scan, rip every title of
-  10 minutes or more into `<rip_root>\<label>` (label from MakeMKV's CINFO, else the drive's
-  volume label, else `SHOW_D<n>`; an existing folder gets `_2`, `_3`, never reused), write
-  `disc.json`, encode, transcribe, say what is next.
-- `add --show NAME FOLDER...`: register existing rip folders (the `C:\Video` backlog):
-  `disc.json`, encode only the missing MP4s, transcribe.
-- `match --show NAME [--season N] [--yes] [--dest-root PATH]`: every disc folder of the show
-  in natural order, TMDB episodes plus Wikipedia, regulars from TMDB plus config
-  `regulars_extra`. The review table shows disc, title, minutes, SxxExx, episode title,
-  score, margin, flag and note; type `ok`, `3=S02E05`, `skip 3`, `unskip 3`, or `q`. On ok,
-  copy to the NAS (or `--dest-root`) and summarise copied, already there and failed.
-  `--season` limits the episodes considered; it does not limit the discs. With `--yes` every
-  assigned row is copied, CHECK rows included.
+- `rip --show NAME [--drive E:] [--season N] [--again] [--yes]`: pick the show on TMDB,
+  scan, rip every title of 10 minutes or more into `<rip_root>/<label>`, one title at a time
+  (label from MakeMKV's CINFO, else the drive's volume label, else `SHOW_D<n>`). disc.json
+  is written with `"complete": false` first and set true only when every title has ripped;
+  on an error or Ctrl+C the partial MKV becomes `.failed`, the finished titles are listed and
+  the command exits non-zero. If `<label>` already holds this show's disc, it stops ("looks
+  already ripped") unless `--again`; a clash with another show or an unregistered folder
+  gets `_2`, `_3`.
+- `add --show NAME [--season N] FOLDER...`: register existing rip folders (the `C:/Video`
+  backlog): disc.json, encode only the missing MP4s, transcribe.
+- `match --show NAME [--season N] [--yes] [--dest-root PATH]`: every complete disc folder of
+  the show in natural order (incomplete rips are left out and named). With `--season`, only
+  discs tagged with that season, plus untagged discs with a warning. TMDB episodes plus
+  Wikipedia, regulars from TMDB plus config `regulars_extra`. The review table shows disc,
+  title, minutes, SxxExx, episode title, score, margin, flag and note; type `ok`, `3=S02E05`
+  (spaces allowed), `skip 3`, `unskip 3`, or `q`, applied in the order typed. On ok, copy to
+  the NAS (or `--dest-root`) and summarise copied, already there and failed.
 - `fix --show NAME --nas-folder "Show (Year)" [--season N] [--yes] [--dest-root PATH]`: for
-  a show already on the NAS. Transcribes its Season folders into
-  `~/.dvd_processor/nas-transcripts/<show>/<Season n>/` (never onto the NAS), matches, and on
-  ok renames with the two-pass rename. Files that are not episodes are listed, never moved.
-- `resume [--yes]`: list unfinished renames (`~/.dvd_processor/rename-*.json`) and finish one.
+  a show already on the NAS. `--nas-folder` has slashes stripped and may not contain `..`.
+  Transcribes its season folders (only season N with `--season`) into
+  `~/.dvd_processor/nas-transcripts/<show>/<season folder>/`, never onto the NAS, each
+  transcript with a sidecar of the file's name, size and modification time so a different
+  file under the same name is transcribed again. On ok renames with the two-pass rename into
+  the show's existing season folder ("Season 01" stays "Season 01"), and moves the cached
+  transcripts along. Files that are not episodes are listed, never moved.
+- `resume [--yes]`: list unfinished renames (`~/.dvd_processor/rename-*.json`) and finish one;
+  with `--yes` and more than one, it lists them and stops.
 
 Config keys: `tmdb_api_key`, `rip_root` (C:\Video), `nas_tv_root`
 (//DXP2800-4CC5/Jellyfin/TVShows), `handbrake_path`, `makemkv_path`, `default_drive`,
