@@ -52,10 +52,16 @@ def make_client(config: Config) -> TmdbClient:
     return TmdbClient(api_key=ensure_api_key(config))
 
 
-def resolve_show(client: TmdbClient, name: str, yes: bool) -> TmdbShowDetails:
+def resolve_show(client: TmdbClient, name: str, yes: bool, tmdb_id: Optional[int] = None) -> TmdbShowDetails:
     """The show on TMDB. With --yes only an unambiguous result is taken: the first result
     must match the name exactly (ignoring case) and be the only one that does. Otherwise
-    a numbered pick."""
+    a numbered pick. --tmdb-id names the show exactly and skips the search (two shows are
+    called exactly "Northern Exposure")."""
+    if tmdb_id is not None:
+        show = client.get_show(tmdb_id)
+        console.print(f"Show: [bold]{show.name}[/bold] ({show.year}), TMDB {show.tmdb_id}, "
+                      f"{len(show.seasons)} seasons")
+        return show
     results = client.search_show(name)
     if not results:
         console.print(f"[red]No TMDB results for '{name}'.[/red]")
@@ -67,7 +73,7 @@ def resolve_show(client: TmdbClient, name: str, yes: bool) -> TmdbShowDetails:
             console.print(f"[red]TMDB search for '{name}' is ambiguous under --yes:[/red]")
             for r in results[:10]:
                 console.print(f"  {r.name} ({r.year or '?'}), TMDB {r.tmdb_id}")
-            console.print("Run again without --yes to pick one.")
+            console.print("Run again with --tmdb-id, or without --yes to pick one.")
             sys.exit(1)
     elif len(results) > 1:
         shown = results[:10]
@@ -218,15 +224,17 @@ def scan(drive):
 
 @main.command()
 @click.option("--show", "show_name", required=True, help="TV show name, looked up on TMDB")
+@click.option("--tmdb-id", type=int, default=None,
+              help="The show's TMDB id, when the name matches more than one show")
 @click.option("--drive", default=None, help="Optical drive letter (e.g. E:)")
 @click.option("--season", type=int, default=None, help="The season this disc holds, if known")
 @click.option("--again", is_flag=True, help="Rip a disc whose folder already exists for this show")
 @click.option("--yes", "-y", is_flag=True, help="Take the TMDB match and do not ask")
-def rip(show_name, drive, season, again, yes):
+def rip(show_name, tmdb_id, drive, season, again, yes):
     """Rip one disc: every title of 10 minutes or more, then encode and transcribe."""
     config = Config()
     client = make_client(config)
-    show = resolve_show(client, show_name, yes)
+    show = resolve_show(client, show_name, yes, tmdb_id)
     drive = drive or config.get("default_drive", "E:")
     scanner = DiscScanner(drive=drive, makemkv_path=resolve_makemkv_path(config))
     console.print(f"\nScanning disc in drive [bold]{drive}[/bold]...")
@@ -276,10 +284,12 @@ def rip(show_name, drive, season, again, yes):
 
 @main.command()
 @click.option("--show", "show_name", required=True, help="TV show name, looked up on TMDB")
+@click.option("--tmdb-id", type=int, default=None,
+              help="The show's TMDB id, when the name matches more than one show")
 @click.option("--season", type=int, default=None, help="The season these discs hold, if known")
 @click.option("--yes", "-y", is_flag=True, help="Take the TMDB match and do not ask")
 @click.argument("folders", nargs=-1, required=True, type=click.Path(file_okay=False))
-def add(show_name, season, yes, folders):
+def add(show_name, tmdb_id, season, yes, folders):
     """Register existing rip folders for a show, encode missing MP4s and transcribe."""
     config = Config()
     paths = [Path(f) for f in folders]
@@ -288,7 +298,7 @@ def add(show_name, season, yes, folders):
         console.print("[red]Not folders: " + ", ".join(map(str, missing)) + "[/red]")
         sys.exit(1)
     client = make_client(config)
-    show = resolve_show(client, show_name, yes)
+    show = resolve_show(client, show_name, yes, tmdb_id)
     for p in paths:
         console.print(f"  {p}: {len(list(p.glob('*.mkv')))} MKV, "
                       f"{len(workflow.missing_encodes(p))} to encode")
@@ -307,15 +317,17 @@ def add(show_name, season, yes, folders):
 
 @main.command()
 @click.option("--show", "show_name", required=True, help="TV show name, looked up on TMDB")
+@click.option("--tmdb-id", type=int, default=None,
+              help="The show's TMDB id, when the name matches more than one show")
 @click.option("--season", type=int, default=None, help="Only consider this season's episodes")
 @click.option("--yes", "-y", is_flag=True, help="Accept the match as it stands and copy without asking")
 @click.option("--dest-root", default=None, help="Copy here instead of the NAS TV root (for testing)")
-def match(show_name, season, yes, dest_root):
+def match(show_name, tmdb_id, season, yes, dest_root):
     """Match every disc of a show to its episodes by dialogue, review, copy to the NAS."""
     config = Config()
     root = choose_root(dest_root, config)
     client = make_client(config)
-    show = resolve_show(client, show_name, yes)
+    show = resolve_show(client, show_name, yes, tmdb_id)
     folders = disc_folders_for_show(
         show.name, show.tmdb_id, rip_root(config),
         on_skip=lambda f, why: console.print(f"[yellow]Leaving out {f}: {why}[/yellow]"))
@@ -360,11 +372,13 @@ def match(show_name, season, yes, dest_root):
 
 @main.command()
 @click.option("--show", "show_name", required=True, help="TV show name, looked up on TMDB")
+@click.option("--tmdb-id", type=int, default=None,
+              help="The show's TMDB id, when the name matches more than one show")
 @click.option("--nas-folder", required=True, help='The show\'s folder on the NAS, e.g. "Arrested Development (2003)"')
 @click.option("--season", type=int, default=None, help="Only consider this season's episodes")
 @click.option("--yes", "-y", is_flag=True, help="Accept the match and rename without asking")
 @click.option("--dest-root", default=None, help="Use this TV root instead of the NAS (for testing)")
-def fix(show_name, nas_folder, season, yes, dest_root):
+def fix(show_name, tmdb_id, nas_folder, season, yes, dest_root):
     """Rename a show already on the NAS by matching its files' dialogue."""
     config = Config()
     root = choose_root(dest_root, config)
@@ -378,7 +392,7 @@ def fix(show_name, nas_folder, season, yes, dest_root):
         console.print(f"[red]No folder {show_dir}[/red]")
         sys.exit(1)
     client = make_client(config)
-    show = resolve_show(client, show_name, yes)
+    show = resolve_show(client, show_name, yes, tmdb_id)
     nas = workflow.scan_nas_show(Path(show_dir), season)
     transcribe_files = _file_transcriber()
     titles = []

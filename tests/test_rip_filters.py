@@ -71,3 +71,19 @@ def test_folder_ripped_before_fingerprints_counts_by_label(tmp_path):
 def test_fingerprint_round_trips_through_disc_json(tmp_path):
     write_disc_info(tmp_path, "Northern Exposure", 1, "NORTHERN_EXPOSURE", titles=[2765, 136])
     assert read_disc_info(tmp_path).titles == [2765, 136]
+
+
+def test_tmdb_id_skips_the_search():
+    from dvd_processor.cli import resolve_show
+    from dvd_processor.tmdb import TmdbShowDetails
+
+    class Client:
+        def search_show(self, name):
+            raise AssertionError("searched despite --tmdb-id")
+
+        def get_show(self, tmdb_id):
+            return TmdbShowDetails(tmdb_id=tmdb_id, name="Northern Exposure", year="1990",
+                                   seasons=[1, 2, 3, 4, 5, 6], number_of_episodes=110)
+
+    show = resolve_show(Client(), "Northern Exposure", True, 4396)
+    assert (show.tmdb_id, show.year) == (4396, "1990")
