@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import re
 from typing import Optional
 import requests
 
@@ -17,6 +18,20 @@ class TmdbEpisode:
     number: int
     title: str
     runtime_secs: Optional[int]
+    overview: str = ""
+
+
+@dataclass
+class TmdbShowDetails:
+    tmdb_id: int
+    name: str
+    year: str
+    seasons: list[int] = field(default_factory=list)  # season numbers, specials (0) left out
+    number_of_episodes: int = 0
+
+
+# Credits that are not a character, so never a regular's name.
+_NOT_CHARACTERS = {"self", "himself", "herself", "themselves", "narrator", "host", "various"}
 
 
 class TmdbClient:
@@ -48,5 +63,59 @@ class TmdbClient:
                 number=ep["episode_number"],
                 title=ep["name"],
                 runtime_secs=runtime * 60 if runtime is not None else None,
+                overview=ep.get("overview") or "",
             ))
         return episodes
+
+    def get_show(self, tmdb_id: int) -> TmdbShowDetails:
+        data = self._get(f"/tv/{tmdb_id}")
+        seasons = sorted(
+            s["season_number"] for s in data.get("seasons", [])
+            if s.get("season_number", 0) > 0
+        )
+        return TmdbShowDetails(
+            tmdb_id=data.get("id", tmdb_id),
+            name=data.get("name", ""),
+            year=(data.get("first_air_date") or "")[:4],
+            seasons=seasons,
+            number_of_episodes=data.get("number_of_episodes") or 0,
+        )
+
+    def get_regulars(self, tmdb_id: int, min_share: float = 0.25) -> list[str]:
+        """First names of the main cast's characters, for the matcher's stop list.
+
+        Uses aggregate_credits (every season), keeping cast in at least min_share of the
+        show's episodes so guest stars stay in; falls back to /credits (the current main cast).
+        """
+        names: list[str] = []
+        try:
+            data = self._get(f"/tv/{tmdb_id}/aggregate_credits")
+            cast = data.get("cast", [])
+            total = max((c.get("total_episode_count") or 0 for c in cast), default=0)
+            for c in cast:
+                if total and (c.get("total_episode_count") or 0) < min_share * total:
+                    continue
+                for role in c.get("roles", []):
+                    names += _first_names(role.get("character", ""))
+        except requests.RequestException:
+            data = self._get(f"/tv/{tmdb_id}/credits")
+            for c in data.get("cast", []):
+                names += _first_names(c.get("character", ""))
+        seen: dict[str, None] = {}
+        for n in names:
+            seen.setdefault(n, None)
+        return list(seen)
+
+
+def _first_names(character: str) -> list[str]:
+    """'Dave Nelson / Narrator (voice)' -> ['Dave']."""
+    out = []
+    for part in re.split(r"\s*/\s*|\s*,\s*", character):
+        part = re.sub(r"\(.*?\)", "", part).strip().strip('"')
+        part = re.sub(r"^(Dr|Mr|Mrs|Ms|Miss)\.?\s+", "", part)
+        if not part or part.lower() in _NOT_CHARACTERS:
+            continue
+        first = part.split()[0]
+        if first.lower() not in _NOT_CHARACTERS and re.match(r"[A-Za-z]", first):
+            out.append(first)
+    return out
