@@ -90,11 +90,14 @@ class EncodeResult:
 
 class HandBrakeEncoder:
     def __init__(self, handbrake_path: Optional[str] = None, preset: str = DEFAULT_PRESET,
-                 quiet: bool = False):
-        """quiet (for the window): no console window, and HandBrake's progress output dropped."""
+                 quiet: bool = False, runner=None):
+        """quiet (for the window): no console window, and HandBrake's progress output dropped.
+        runner: a stand-in for subprocess.run (procs.ProcessRunner.run) so an encode can be
+        stopped; a stopped encode's temporary file is removed like any failed one."""
         self.handbrake_path = handbrake_path or default_handbrake_path()
         self.preset = preset
         self.quiet = quiet
+        self.runner = runner
 
     def _quiet_kwargs(self) -> dict:
         if not self.quiet:
@@ -111,7 +114,7 @@ class HandBrakeEncoder:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = output_path.with_name(output_path.stem + ".encoding" + output_path.suffix)
         try:
-            subprocess.run(
+            (self.runner or subprocess.run)(
                 [
                     self.handbrake_path,
                     "--input", str(input_path),

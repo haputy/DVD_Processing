@@ -256,13 +256,16 @@ def copy_plan(rows: list[ReviewRow], show: str, year: Optional[str], root: str) 
     return items
 
 
-def copy_all(items: list[CopyItem], progress=None) -> CopySummary:
+def copy_all(items: list[CopyItem], progress=None, should_stop=None) -> CopySummary:
+    """Copy each item. A stop (procs.Cancelled, from should_stop or progress) is not a
+    failure: it ends the run, with the file in progress removed."""
     summary = CopySummary()
     for item in items:
         if progress:
             progress(f"copying {item.source} -> {item.dest}")
         try:
-            status = copy_episode(item.source, item.dest, allow_drive=True)
+            status = (copy_episode(item.source, item.dest, allow_drive=True) if should_stop is None
+                      else copy_episode(item.source, item.dest, allow_drive=True, should_stop=should_stop))
         except Exception as exc:
             summary.failed.append((item, str(exc)))
             log_action(f"copy failed: {item.source} -> {item.dest}: {exc}")

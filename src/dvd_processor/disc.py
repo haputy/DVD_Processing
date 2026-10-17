@@ -49,11 +49,16 @@ CREATE_NO_WINDOW = 0x08000000
 
 
 class DiscScanner:
-    def __init__(self, drive: str, makemkv_path: str = "makemkvcon", quiet: bool = False):
-        """quiet (for the window): no console window for makemkvcon and its output dropped."""
+    def __init__(self, drive: str, makemkv_path: str = "makemkvcon", quiet: bool = False, runner=None):
+        """quiet (for the window): no console window for makemkvcon and its output dropped.
+        runner: a stand-in for subprocess.run (procs.ProcessRunner.run) so a rip can be stopped."""
         self.drive = drive
         self.makemkv_path = makemkv_path
         self.quiet = quiet
+        self.runner = runner
+
+    def _run(self, *args, **kwargs):
+        return (self.runner or subprocess.run)(*args, **kwargs)
 
     def _no_window(self) -> dict:
         return {"creationflags": CREATE_NO_WINDOW} if self.quiet and os.name == "nt" else {}
@@ -63,7 +68,7 @@ class DiscScanner:
 
     def scan_with_label(self) -> tuple[list[DiscTitle], str]:
         """The disc's titles and its label (from CINFO, else the drive's volume label)."""
-        result = subprocess.run(
+        result = self._run(
             [self.makemkv_path, "--robot", "info", f"disc:{self._drive_index()}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -76,7 +81,7 @@ class DiscScanner:
         return self._parse_titles(result.stdout), label
 
     def _drive_index(self) -> int:
-        result = subprocess.run(
+        result = self._run(
             [self.makemkv_path, "--robot", "info", "disc:9999"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -136,7 +141,7 @@ class DiscScanner:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         for idx in title_indices:
-            subprocess.run(
+            self._run(
                 [
                     self.makemkv_path,
                     "--robot",

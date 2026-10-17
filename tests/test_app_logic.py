@@ -319,3 +319,93 @@ def test_friendly_errors():
     import requests
     assert "Could not reach TMDB" in al.friendly_error(requests.ConnectionError("x"))
     assert al.friendly_error(ValueError("odd")).startswith("Something went wrong")
+
+
+# ---- review fixes: show pick, folder check, confirm text, rip safety ------------------------
+
+def test_auto_pick_follows_the_cli_yes_rule():
+    ne = [al.Show(1, "Northern Exposure", "1990"), al.Show(2, "Northern Exposure", "2023")]
+    assert al.auto_pick(ne, "northern exposure") is None          # two exact names
+    assert al.auto_pick([SHOW], " newsradio ") == 0
+    assert al.auto_pick([al.Show(5, "NewsRadio Live", "")], "NewsRadio") is None  # not exact
+    assert al.auto_pick([al.Show(5, "Other", ""), SHOW], "NewsRadio") is None     # exact but not first
+    assert al.auto_pick([], "x") is None
+    assert al.pick_prompt(2) == "(pick one of 2 shows)" and al.pick_prompt(1) == "(pick the show)"
+
+
+def test_folder_matches_show():
+    assert al.folder_matches_show("NewsRadio (1995)", "NewsRadio")
+    assert al.folder_matches_show("Mr. Show (1995)", "Mr Show")
+    assert not al.folder_matches_show("3rd Rock from the Sun (1996)", "NewsRadio")
+
+
+def test_confirm_texts_count_ticked_check_rows():
+    rows = _rows()
+    items = [workflow_item()]
+    assert "CHECK" not in al.copy_confirm_text(items, "//nas/TV", rows)
+    al.set_include(rows, 2, True)                       # a CHECK row ticked as it is
+    assert "1 ticked row is still flagged CHECK" in al.copy_confirm_text(items, "//nas/TV", rows)
+    al.set_include(rows, 3, True)
+    assert "2 ticked rows are still flagged CHECK" in al.rename_confirm_text([("a", "b")], 0, "//nas/TV/X", rows)
+    al.set_episode(rows, 2, "S03E04 Rose Bowl", EPS)    # a picked episode is FIXED, no longer CHECK
+    assert al.still_check(rows) == 1
+
+
+def workflow_item():
+    from dvd_processor.workflow import CopyItem
+    return CopyItem(1, "C:/Video/D1/MP4/A1 T00.mp4", "//nas/TV/NewsRadio (1995)/Season 3/NewsRadio S03 E01.mp4")
+
+
+def test_rip_plan_keeps_the_show_and_rip_refuses_another(tmp_path, tmp_config_dir):
+    plan = al.plan_rip(_scan(), "D1", SHOW, tmp_path)
+    assert plan.show is SHOW
+    with pytest.raises(al.UserError) as e:
+        al.run_rip(plan, FakeScanner(), FakeEncoder(), None, al.Show(4499, "Northern Exposure", "1990"), None)
+    assert "Scan the disc again" in str(e.value)
+    assert not (tmp_path / "D1").exists()
+
+
+def test_rip_ejects_after_the_last_title_and_before_encoding(tmp_path, tmp_config_dir):
+    plan = al.plan_rip(_scan(), "D1", SHOW, tmp_path)
+    said = []
+
+    def eject():
+        said.append("EJECT")
+        return True
+    al.run_rip(plan, FakeScanner(), FakeEncoder(), lambda f, progress: [], SHOW, None,
+               progress=said.append, eject=eject)
+    i = said.index("EJECT")
+    assert said[i - 1] == "Ripping title 3 (4 of 4)"
+    assert said[i + 1] == al.EJECTED
+    assert said[i + 2].startswith("Encoding 1 of 4")
+
+
+def test_cancelled_rip_keeps_the_partial_as_failed_and_stays_incomplete(tmp_path, tmp_config_dir):
+    from dvd_processor.procs import Cancelled
+
+    class StoppedScanner(FakeScanner):
+        def rip(self, indices, folder):
+            (Path(folder) / f"A1_t{indices[0]:02d}.mkv").write_text("half")
+            if indices[0] == 1:
+                raise Cancelled()
+    plan = al.plan_rip(_scan(), "D1", SHOW, tmp_path)
+    ejected = []
+    with pytest.raises(Cancelled) as e:
+        al.run_rip(plan, StoppedScanner(), FakeEncoder(), None, SHOW, None, eject=lambda: ejected.append(1))
+    assert "stopped at title 1" in str(e.value)
+    assert (tmp_path / "D1" / "A1_t01.mkv.failed").exists()
+    assert not read_disc_info(tmp_path / "D1").complete
+    assert ejected == []
+    assert al.friendly_error(e.value).startswith("The rip was stopped")
+
+
+def test_run_copy_stops_when_asked(tmp_path, tmp_config_dir):
+    from dvd_processor.procs import Cancelled
+    src = tmp_path / "A1 T00.mp4"
+    src.write_bytes(b"x" * 10)
+    rows = al.build_rows([_match("A1 T00", EPS[0], path=str(src))])
+    items = al.copy_items(rows, SHOW, (tmp_path / "nas").as_posix())
+    with pytest.raises(Cancelled):
+        al.run_copy(items, should_stop=lambda: True)
+    assert not list((tmp_path / "nas").rglob("*.part"))
+    assert not Path(items[0].dest).exists()

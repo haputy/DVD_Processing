@@ -5,6 +5,9 @@ never touches a widget: it posts messages to a queue, and the window reads the q
 100 ms on the Tk event loop. Errors show as a plain message in the log and a dialog; the
 full detail goes to ~/.dvd_processor/gui.log.
 
+makemkvcon and HandBrakeCLI run through a procs.ProcessRunner: Cancel stops them at once,
+and closing the window kills them (they sit in a kill-on-close Windows job).
+
     python -m dvd_processor gui
 """
 import logging
@@ -25,19 +28,27 @@ from dvd_processor.discinfo import rip_root
 from dvd_processor.drives import drive_has_disc, eject, get_optical_drives
 from dvd_processor.handbrake import HandBrakeEncoder, resolve_handbrake_path
 from dvd_processor.nas import nas_tv_root, resume_renaming, unfinished_rename_plans
+from dvd_processor.procs import Cancelled, ProcessRunner
 
 log = logging.getLogger("dvd_processor.gui")
 
 TITLE = "DVD to Jellyfin"
 NO_SHOW = "(type a name and click Find)"
+SEARCHING = "(searching TMDB...)"
+NOTHING_FOUND = "(no shows found)"
 NO_FOLDER = "(no show folders found)"
+PICK_FOLDER = "(pick a show folder)"
 ERROR_RED = "#b00020"
 TEXT = ("gray10", "gray90")
+STOP_EFFECT = ("A rip in progress stops at once: its half-written title is kept as .failed, the disc "
+               "folder stays marked incomplete, and Match leaves it out until the disc is ripped again "
+               "with 'Rip again' ticked. A half-done encode or copy is removed. Transcribing stops "
+               "after the title it is on.")
 
 COLUMNS = [("include", "Copy", 68), ("disc", "Disc", 150), ("title", "Title", 80), ("minutes", "Min", 50),
            ("episode", "Episode (click to change)", 330), ("score", "Score", 60), ("margin", "Margin", 60),
            ("flag", "Flag", 64), ("note", "Note", 380)]
-TICK, NO_TICK = "\u2611", "\u2610"
+TICK, NO_TICK = "☑", "☐"
 
 
 def gui_log_path() -> Path:
@@ -148,6 +159,9 @@ class ReviewTable(ctk.CTkFrame):
             self._editor = None
 
 
+Work = Callable[[Callable[[str], None], ProcessRunner], object]
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -157,9 +171,11 @@ class App(ctk.CTk):
         self.config_ = Config()
         self._queue: queue.Queue = queue.Queue()
         self._busy: Optional[str] = None
+        self._job: Optional[ProcessRunner] = None   # the busy task's runner, for Cancel
         self._client = None
         self._shows: dict[str, al.Show] = {}
         self._unfinished: list = []
+        self._nas_picked: Optional[str] = None      # the NAS folder Andy picked, if any
         self.show: Optional[al.Show] = None
         self.rip_plan: Optional[al.RipPlan] = None
         self.match_result: Optional[al.MatchResult] = None
@@ -271,8 +287,9 @@ class App(ctk.CTk):
     def _build_fix_tab(self, tab):
         row = self._button_row(tab)
         ctk.CTkLabel(row, text="Show folder on the NAS").pack(side="left", padx=(0, 6))
-        self.nas_menu = ctk.CTkOptionMenu(row, values=[NO_FOLDER], width=300, dynamic_resizing=False,
+        self.nas_menu = ctk.CTkOptionMenu(row, values=[PICK_FOLDER], width=300, dynamic_resizing=False,
                                           command=self._pick_nas_folder)
+        self.nas_menu.set(PICK_FOLDER)
         self.nas_menu.pack(side="left", padx=(0, 6))
         self.nas_refresh = ctk.CTkButton(row, text="Refresh", width=80, command=self._list_nas)
         self.nas_refresh.pack(side="left", padx=(0, 16))
@@ -289,7 +306,14 @@ class App(ctk.CTk):
         frame = ctk.CTkFrame(self)
         frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(4, 10))
         frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(frame, text="Progress", anchor="w").grid(row=0, column=0, sticky="w", padx=10)
+        head = ctk.CTkFrame(frame, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=6, pady=(4, 2))
+        ctk.CTkLabel(head, text="Progress", anchor="w").pack(side="left", padx=4)
+        self.cancel_button = ctk.CTkButton(head, text="Cancel", width=90, fg_color="#a33", hover_color="#822",
+                                           command=self._cancel)
+        self.cancel_button.pack(side="right")
+        self.busy_label = ctk.CTkLabel(head, text="", anchor="e")
+        self.busy_label.pack(side="right", padx=10)
         self.log_box = ctk.CTkTextbox(frame, height=170, wrap="word")
         self.log_box.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 6))
         self.log_box.configure(state="disabled")
@@ -316,14 +340,20 @@ class App(ctk.CTk):
                 except queue.Empty:
                     break
                 if busy:
-                    self._busy = None
+                    self._busy, self._job = None, None
                 try:
                     if kind == "log":
                         self.say(what)
                     elif kind == "done":
                         payload[0](payload[1])
                     elif kind == "error":
-                        self._show_error(what, payload)
+                        failed, exc = payload
+                        if failed:
+                            failed()
+                        if isinstance(exc, Cancelled):
+                            self._show_cancelled(what, exc)
+                        else:
+                            self._show_error(what, exc)
                 except Exception as exc:
                     log.exception("error showing a result")
                     self._show_error("Showing the result", exc)
@@ -338,22 +368,38 @@ class App(ctk.CTk):
         self.say(f"{what} stopped: {msg}")
         messagebox.showerror(TITLE, f"{what} stopped.\n\n{msg}\n\nDetails are in {gui_log_path()}", parent=self)
 
-    def _run(self, what: str, work: Callable[[Callable[[str], None]], object],
-             done: Callable[[object], None], busy: bool = True) -> bool:
-        """Run work(progress) in a thread, then done(result) on the Tk loop. busy disables the
-        buttons meanwhile; quick background lookups pass busy=False."""
+    def _show_cancelled(self, what: str, exc: BaseException):
+        detail = str(exc)
+        self.say(f"{what} cancelled." + (f" {detail}" if detail else ""))
+        messagebox.showinfo(TITLE, f"{what} cancelled." + (f"\n\n{detail}" if detail else ""), parent=self)
+
+    def _run(self, what: str, work: Work, done: Callable[[object], None], busy: bool = True,
+             failed: Optional[Callable[[], None]] = None) -> bool:
+        """Run work(progress, job) in a thread, then done(result) on the Tk loop; on an error
+        or a cancel, failed() first. busy disables the buttons meanwhile and makes Cancel stop
+        this job; quick background lookups pass busy=False."""
+        job = ProcessRunner()
         if busy:
             if self._busy:
+                messagebox.showinfo(TITLE, f"Wait for {self._busy.lower()} to finish, or click Cancel.",
+                                    parent=self)
                 return False
-            self._busy = what
+            self._busy, self._job = what, job
             self._refresh_buttons()
+
+        def progress(msg: str):
+            job.check()  # every progress line is a place a Cancel takes effect
+            self._post(msg)
 
         def target():
             try:
-                result = work(self._post)
+                result = work(progress, job)
+            except Cancelled as exc:
+                log.info("%s cancelled: %s", what, exc)
+                self._queue.put(("error", what, (failed, exc), busy))
             except Exception as exc:
                 log.exception("%s failed", what)
-                self._queue.put(("error", what, exc, busy))
+                self._queue.put(("error", what, (failed, exc), busy))
             else:
                 self._queue.put(("done", what, (done, result), busy))
         threading.Thread(target=target, name=what, daemon=True).start()
@@ -365,13 +411,17 @@ class App(ctk.CTk):
 
     def _refresh_buttons(self):
         idle = self._busy is None
+        picked = self.show is not None
 
         def state(button, ok):
             button.configure(state="normal" if idle and ok else "disabled")
-        for b in (self.find_button, self.scan_button, self.match_button, self.nas_refresh, self.fix_button,
-                  self.resume_button):
+        for b in (self.find_button, self.nas_refresh, self.resume_button):
             state(b, True)
-        state(self.rip_button, self.rip_plan is not None and self.rip_plan.can_rip(self.again_var.get()))
+        for b in (self.scan_button, self.match_button, self.fix_button):
+            state(b, picked)
+        state(self.rip_button, picked and self.rip_plan is not None and self.rip_plan.can_rip(self.again_var.get()))
+        self.cancel_button.configure(state="disabled" if idle else "normal")
+        self.busy_label.configure(text="" if idle else f"{self._busy}...")
         self.match_table.locked = self.fix_table.locked = not idle
 
         r = self.match_result
@@ -409,7 +459,8 @@ class App(ctk.CTk):
 
     def _need_show(self) -> Optional[al.Show]:
         if self.show is None:
-            messagebox.showinfo(TITLE, "Pick the show first: type its name at the top and click Find.", parent=self)
+            messagebox.showinfo(TITLE, "Pick the show first: type its name at the top, click Find, and "
+                                       "choose it from the list.", parent=self)
         return self.show
 
     def _season(self):
@@ -432,11 +483,24 @@ class App(ctk.CTk):
     def _nas_root(self) -> str:
         return nas_tv_root(self.config_)
 
-    def _on_close(self):
-        if self._busy and not messagebox.askyesno(
-                TITLE, f"Still working ({self._busy.lower()}). If you close now, it stops part way, and a "
-                       f"rip would need doing again. Close anyway?", parent=self):
+    def _cancel(self):
+        job, what = self._job, self._busy
+        if job is None or what is None:
             return
+        if not messagebox.askyesno(TITLE, f"Stop {what.lower()}?\n\n{STOP_EFFECT}", parent=self):
+            return
+        if self._job is job:  # it may have finished while the question was up
+            self.say(f"Stopping {what.lower()}...")
+            job.cancel()
+
+    def _on_close(self):
+        if self._busy:
+            if not messagebox.askyesno(
+                    TITLE, f"Still working ({self._busy.lower()}). Closing stops it now.\n\n{STOP_EFFECT}\n\n"
+                           f"Close anyway?", parent=self):
+                return
+            if self._job is not None:
+                self._job.cancel()  # kills makemkvcon or HandBrakeCLI; the job object would too
         self.destroy()
 
     # ---- startup -----------------------------------------------------------------------------
@@ -450,10 +514,15 @@ class App(ctk.CTk):
         self._refresh_buttons()
         configured = self.config_.get("default_drive")
         drives = list(self.drives)
-        self._run("Looking for a disc", lambda p: al.pick_drive(drives, drive_has_disc, configured),
-                  self.drive_menu.set, busy=False)
+        initial = self.drive_menu.get()
+
+        def found(drive):
+            if self.drive_menu.get() == initial:  # never override a drive Andy picked meanwhile
+                self.drive_menu.set(drive)
+        self._run("Looking for a disc", lambda p, j: al.pick_drive(drives, drive_has_disc, configured),
+                  found, busy=False)
         self._list_nas()
-        self.say("Ready. Rip each disc on the Rip disc tab, then Match and copy when all are in.")
+        self.say("Ready. Pick the show, rip each disc on the Rip disc tab, then Match and copy when all are in.")
 
     def _check_unfinished(self):
         self._unfinished = unfinished_rename_plans()
@@ -477,9 +546,14 @@ class App(ctk.CTk):
             self.say(f"Resumed {plan.name}: {len(report.renamed)} moved, {len(report.left_as_temp)} left as "
                      f".renaming" + "".join(f"\n  {t} (its destination exists)" for t in report.left_as_temp))
             self._check_unfinished()
-        self._run("Resuming the rename", lambda p: resume_renaming(plan), done)
+        self._run("Resuming the rename", lambda p, j: resume_renaming(plan), done,
+                  failed=self._check_unfinished)
 
     # ---- top bar -----------------------------------------------------------------------------
+
+    def _set_show_menu(self, label: str, values=None):
+        self.show_menu.configure(values=values or [label])
+        self.show_menu.set(label)
 
     def _find(self):
         name = self.show_entry.get().strip()
@@ -489,48 +563,63 @@ class App(ctk.CTk):
         client = self._client_or_ask()
         if client is None:
             return
+        if self._busy:
+            messagebox.showinfo(TITLE, f"Wait for {self._busy.lower()} to finish first.", parent=self)
+            return
+        self.show, self._shows = None, {}
+        self._set_show_menu(SEARCHING)
         self.say(f"Searching TMDB for {name}...")
 
         def done(results):
             if not results:
+                self._set_show_menu(NOTHING_FOUND)
                 self.say(f"TMDB has nothing called {name}.")
                 return
             shows = [al.Show(r.tmdb_id, r.name, r.year) for r in results[:15]]
             self._shows = {al.show_choice(s): s for s in shows}
             labels = list(self._shows)
-            self.show_menu.configure(values=labels)
-            self.show_menu.set(labels[0])
-            self._pick_show(labels[0])
-            if len(shows) > 1:
-                self.say(f"TMDB found {len(shows)} shows. If {labels[0]} is the wrong one, pick another "
-                         f"from the list.")
-        self._run("Searching TMDB", lambda p: client.search_show(name), done)
+            pick = al.auto_pick(shows, name)
+            if pick is None:
+                prompt = al.pick_prompt(len(shows))
+                self._set_show_menu(prompt, [prompt] + labels)
+                self.say(f"TMDB found {len(shows)} shows for {name}. Pick the right one from the list "
+                         f"(the year and TMDB id tell them apart).")
+            else:
+                self._set_show_menu(labels[pick], labels)
+                self._pick_show(labels[pick])
+        self._run("Searching TMDB", lambda p, j: client.search_show(name), done,
+                  failed=lambda: self._set_show_menu(NO_SHOW))
 
     def _pick_show(self, label):
-        show = self._shows.get(label)
-        if show is not None:
-            self.show = show
-            self.say(f"Show: {al.show_choice(show)}")
+        self.show = self._shows.get(label)  # a prompt line picks nothing
+        if self.show is not None:
+            self.say(f"Show: {al.show_choice(self.show)}")
+        self._refresh_buttons()
 
     # ---- rip ---------------------------------------------------------------------------------
 
-    def _scanner(self) -> DiscScanner:
-        return DiscScanner(drive=self.drive_menu.get(), makemkv_path=resolve_makemkv_path(self.config_), quiet=True)
+    def _scanner(self, job: ProcessRunner, drive: str) -> DiscScanner:
+        return DiscScanner(drive=drive, makemkv_path=resolve_makemkv_path(self.config_), quiet=True,
+                           runner=job.run)
 
     def _scan(self):
+        if self._busy:
+            messagebox.showinfo(TITLE, f"Wait for {self._busy.lower()} to finish before scanning the next "
+                                       f"disc. Its log shows how far it has got.", parent=self)
+            return
         show = self._need_show()
         if show is None:
             return
-        scanner = self._scanner()
+        drive = self.drive_menu.get()
         root = rip_root(self.config_)
         self.rip_plan = None
         self.scan_tree.delete(*self.scan_tree.get_children())
-        self.say(f"Scanning the disc in {scanner.drive} (this takes a minute)...")
+        self.say(f"Scanning the disc in {drive} (this takes a minute)...")
 
-        def work(progress):
-            titles, label = scanner.scan_with_label()
+        def work(progress, job):
+            titles, label = self._scanner(job, drive).scan_with_label()
             if not titles:
-                raise al.UserError(f"MakeMKV found no titles on the disc in {scanner.drive}. Is a disc in?")
+                raise al.UserError(f"MakeMKV found no titles on the disc in {drive}. Is a disc in?")
             return al.plan_rip(titles, label, show, root)
 
         def done(plan):
@@ -539,7 +628,7 @@ class App(ctk.CTk):
                 self.scan_tree.insert("", "end", values=(r.index, r.length, "yes" if r.rip else "skip", r.why),
                                       tags=() if r.rip else ("skip",))
             self.again_var.set(False)
-            self.rip_status.configure(text=f"Disc {plan.label}. {plan.summary}")
+            self.rip_status.configure(text=f"Disc {plan.label} of {plan.show.name}. {plan.summary}")
             self.say(f"Disc {plan.label}: {len(plan.rows)} titles. {plan.summary}")
         self._run("Scanning the disc", work, done)
 
@@ -547,28 +636,37 @@ class App(ctk.CTk):
         plan, show = self.rip_plan, self.show
         if plan is None or show is None:
             return
+        if plan.show.tmdb_id != show.tmdb_id:
+            messagebox.showinfo(TITLE, f"The disc was scanned for {al.show_choice(plan.show)}, but the show "
+                                       f"picked now is {al.show_choice(show)}. Scan the disc again.", parent=self)
+            return
         ok, season = self._season()
         if not ok:
             return
         again = self.again_var.get()
-        scanner = self._scanner()
-        encoder = HandBrakeEncoder(resolve_handbrake_path(self.config_), quiet=True)
+        drive = self.drive_menu.get()
+        handbrake = resolve_handbrake_path(self.config_)
         self.rip_status.configure(text="Ripping, encoding and transcribing. This takes a while; the log below "
-                                       "shows where it is.")
+                                       "shows where it is. The disc comes out as soon as ripping is done.")
 
-        def work(progress):
+        def work(progress, job):
             from dvd_processor.transcribe import transcribe_disc
-            folder = al.run_rip(plan, scanner, encoder, transcribe_disc, show, season, again, progress)
-            return folder, eject(scanner.drive)
+            scanner = self._scanner(job, drive)
+            encoder = HandBrakeEncoder(handbrake, quiet=True, runner=job.run)
+            return al.run_rip(plan, scanner, encoder, transcribe_disc, show, season, again, progress,
+                              eject=lambda: eject(drive))
 
-        def done(result):
-            folder, ejected = result
+        def done(folder):
             self.rip_plan = None
             msg = "Disc done. Put in the next disc and scan, or go to Match when all discs are in."
             self.rip_status.configure(text=msg)
-            self.say(f"Disc done: {folder}" + (" (ejected)" if ejected else ""))
+            self.say(f"Disc done: {folder}")
             self.say(msg)
-        self._run("Ripping", work, done)
+
+        def failed():
+            self.rip_plan = None
+            self.rip_status.configure(text="The rip did not finish; the log says why. Scan the disc again.")
+        self._run("Ripping", work, done, failed=failed)
 
     # ---- match and copy ----------------------------------------------------------------------
 
@@ -586,7 +684,7 @@ class App(ctk.CTk):
         self.match_table.clear()
         self.say(f"Matching {show.name}" + (f" season {season}" if season else "") + "...")
 
-        def work(progress):
+        def work(progress, job):
             from dvd_processor.transcribe import transcribe_disc
             from dvd_processor.transcript_matcher import match_transcripts
             return al.run_match(show, season, root, load, transcribe_disc, match_transcripts, progress)
@@ -602,6 +700,10 @@ class App(ctk.CTk):
         r = self.match_result
         if r is None:
             return
+        dupes = al.duplicate_problem(r.rows, "copying")
+        if dupes:  # the button is disabled then too; this is the backstop
+            messagebox.showerror(TITLE, dupes, parent=self)
+            return
         try:
             root = self._nas_root()
             items = al.copy_items(r.rows, r.show, root)
@@ -610,9 +712,7 @@ class App(ctk.CTk):
             return
         if not items:
             return
-        if not messagebox.askyesno(
-                TITLE, f"Copy {len(items)} episodes to\n{root}?\n\nFor example:\n{items[0].dest}\n\n"
-                       f"Nothing already there is overwritten, and the originals in C:\\Video stay.", parent=self):
+        if not messagebox.askyesno(TITLE, al.copy_confirm_text(items, root, r.rows), parent=self):
             return
         self.say(al.unused_text(r.rows, r.episodes))
 
@@ -620,7 +720,7 @@ class App(ctk.CTk):
             text = al.copy_summary_text(summary)
             self.say(text)
             (messagebox.showwarning if summary.failed else messagebox.showinfo)(TITLE, text, parent=self)
-        self._run("Copying", lambda p: al.run_copy(items, p), done)
+        self._run("Copying", lambda p, job: al.run_copy(items, p, should_stop=lambda: job.cancelled), done)
 
     # ---- fix ---------------------------------------------------------------------------------
 
@@ -631,7 +731,7 @@ class App(ctk.CTk):
             self.say(f"NAS root problem: {al.friendly_error(exc)}")
             return
 
-        def work(progress):
+        def work(progress, job):
             try:
                 return al.list_nas_shows(root)
             except al.UserError as exc:
@@ -639,23 +739,37 @@ class App(ctk.CTk):
                 return []
 
         def done(names):
-            values = names or [NO_FOLDER]
-            current = self.nas_menu.get()
-            self.nas_menu.configure(values=values)
-            self.nas_menu.set(current if current in names else values[0])
+            if not names:
+                self._nas_picked = None
+                self.nas_menu.configure(values=[NO_FOLDER])
+                self.nas_menu.set(NO_FOLDER)
+                return
+            self.nas_menu.configure(values=[PICK_FOLDER] + names)
+            if self._nas_picked not in names:  # keep only a folder Andy picked himself
+                self._nas_picked = None
+            self.nas_menu.set(self._nas_picked or PICK_FOLDER)
         self._run("Listing the NAS", work, done, busy=False)
 
     def _pick_nas_folder(self, folder):
-        if folder != NO_FOLDER and not self.show_entry.get().strip():
+        if folder in (PICK_FOLDER, NO_FOLDER):
+            self._nas_picked = None
+            return
+        self._nas_picked = folder
+        if not self.show_entry.get().strip():
             self.show_entry.insert(0, al.name_from_folder(folder))
 
     def _fix_match(self):
-        folder = self.nas_menu.get()
-        if folder == NO_FOLDER:
-            messagebox.showinfo(TITLE, "No show folder picked. Is the NAS on? Click Refresh.", parent=self)
+        folder = self._nas_picked
+        if folder is None:
+            messagebox.showinfo(TITLE, "Pick the show's folder on the NAS first (Refresh if the list is "
+                                       "empty).", parent=self)
             return
         show = self._need_show()
         if show is None:
+            return
+        if not al.folder_matches_show(folder, show.name) and not messagebox.askyesno(
+                TITLE, f"The folder {folder} does not look like {al.show_choice(show)}.\n\n"
+                       f"Match it as that show anyway?", parent=self):
             return
         ok, season = self._season()
         client = self._client_or_ask() if ok else None
@@ -668,7 +782,7 @@ class App(ctk.CTk):
         self.say(f"Matching {folder} on the NAS as {al.show_choice(show)}. Transcripts go to the home "
                  f"folder, never onto the NAS.")
 
-        def work(progress):
+        def work(progress, job):
             from dvd_processor.transcribe import transcribe_files
             from dvd_processor.transcript_matcher import match_transcripts
             return al.run_fix_match(show, folder, season, root, load, transcribe_files, match_transcripts, progress)
@@ -686,10 +800,14 @@ class App(ctk.CTk):
         r = self.fix_result
         if r is None:
             return
+        dupes = al.duplicate_problem(r.rows, "renaming")
+        if dupes:  # the button is disabled then too; this is the backstop
+            messagebox.showerror(TITLE, dupes, parent=self)
+            return
         moves, right = al.rename_moves(r)
-        if not messagebox.askyesno(
-                TITLE, f"Rename {len(moves) - right} files in {r.show_dir}?\n{right} are already right.\n\n"
-                       f"The plan is saved first, so an interrupted rename can be resumed.", parent=self):
+        if len(moves) == right:
+            return
+        if not messagebox.askyesno(TITLE, al.rename_confirm_text(moves, right, r.show_dir, r.rows), parent=self):
             return
 
         def done(out):
@@ -701,13 +819,8 @@ class App(ctk.CTk):
             self.fix_status.configure(text=text, text_color=TEXT)
             self._check_unfinished()
             messagebox.showinfo(TITLE, text, parent=self)
-
-        def work(progress):
-            try:
-                return al.run_rename(r, progress)
-            finally:  # a stopped rename leaves a plan to resume: show the banner either way
-                self._queue.put(("done", "", (lambda _x: self._check_unfinished(), None), False))
-        self._run("Renaming", work, done)
+        # a stopped rename leaves a plan to resume, so the banner is checked either way
+        self._run("Renaming", lambda p, j: al.run_rename(r, p), done, failed=self._check_unfinished)
 
 
 def _setup_logging():

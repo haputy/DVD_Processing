@@ -20,16 +20,17 @@ def get_optical_drives() -> list[str]:
 
 def drive_has_disc(drive: str) -> bool:
     """True when the drive has a readable disc in it. Never shows Windows' "insert a disc"
-    box: critical error dialogs are turned off around the check."""
+    box: critical error dialogs are turned off for this thread only, around the check."""
     try:
         k32 = ctypes.windll.kernel32
-        old = k32.SetErrorMode(1)  # SEM_FAILCRITICALERRORS
+        old = ctypes.c_uint(0)
+        k32.SetThreadErrorMode(1, ctypes.byref(old))  # SEM_FAILCRITICALERRORS
         try:
             buf = ctypes.create_unicode_buffer(261)
             root = drive.rstrip("\\/") + "\\"
             return bool(k32.GetVolumeInformationW(root, buf, len(buf), None, None, None, None, 0))
         finally:
-            k32.SetErrorMode(old)
+            k32.SetThreadErrorMode(old.value, None)
     except Exception:
         return False
 

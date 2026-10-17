@@ -19,7 +19,8 @@ from dvd_processor.discinfo import disc_folders_for_show, write_disc_info
 from dvd_processor.episodes import Episode
 from dvd_processor.handbrake import mp4_path
 from dvd_processor.nas import RenameError, RootError, canon_exact, log_action
-from dvd_processor.review import FLAG_FIXED, ReviewRow, episode_code, rows_from_matches
+from dvd_processor.procs import Cancelled
+from dvd_processor.review import FLAG_FIXED, ReviewRow, check_rows, episode_code, rows_from_matches
 from dvd_processor.transcript_matcher import CONFIDENT_MARGIN, FLAG_CHECK, FLAG_EXTRA
 
 NO_EPISODE = "none"
@@ -51,6 +52,19 @@ def show_choice(show) -> str:
 
 def show_choices(results) -> list[str]:
     return [show_choice(r) for r in results]
+
+
+def auto_pick(results, name: str) -> Optional[int]:
+    """The result to pick without asking, the CLI's --yes rule: only when exactly one result
+    has the exact name (ignoring case) and it is the first result. Else None: Andy picks."""
+    want = (name or "").strip().casefold()
+    exact = [i for i, r in enumerate(results) if r.name.casefold() == want]
+    return 0 if exact == [0] else None
+
+
+def pick_prompt(n: int) -> str:
+    """What the show menu says while Andy still has to pick."""
+    return "(pick the show)" if n == 1 else f"(pick one of {n} shows)"
 
 
 def parse_season(text: str) -> Optional[int]:
@@ -96,6 +110,7 @@ class ScanRow:
 
 @dataclass
 class RipPlan:
+    show: Show                 # the show picked when the disc was scanned
     rows: list[ScanRow]
     keep: list                 # the DiscTitles to rip
     label: str
@@ -135,7 +150,7 @@ def plan_rip(titles: list, label: str, show: Show, root: Path) -> RipPlan:
     if not label:
         label = workflow.fallback_label(show.name, len(disc_folders_for_show(show.name, show.tmdb_id, root)))
     already = workflow.already_ripped(root, label, show.name, show.tmdb_id, fingerprint) if keep else None
-    return RipPlan(rows, keep, label, root, workflow.unique_disc_folder(root, label), fingerprint, already)
+    return RipPlan(show, rows, keep, label, root, workflow.unique_disc_folder(root, label), fingerprint, already)
 
 
 def encode_folder(folder: Path, encoder, progress: Progress = _quiet) -> int:
@@ -160,10 +175,18 @@ def transcribe_progress(progress: Progress) -> Progress:
     return say
 
 
+EJECTED = "Disc ejected, you can put in the next one; encoding continues."
+
+
 def run_rip(plan: RipPlan, scanner, encoder, transcriber, show: Show, season: Optional[int],
-            again: bool = False, progress: Progress = _quiet) -> Path:
+            again: bool = False, progress: Progress = _quiet,
+            eject: Optional[Callable[[], bool]] = None) -> Path:
     """The CLI rip command's steps after the scan: rip each title, encode, transcribe.
-    Returns the disc folder. Raises UserError when the rip stops part way."""
+    The disc is ejected (eject()) as soon as the last title has ripped. Returns the disc
+    folder. Raises UserError when the rip fails part way, Cancelled when it was stopped."""
+    if plan.show.tmdb_id != show.tmdb_id:
+        raise UserError(f"The disc was scanned for {show_choice(plan.show)}, but the show picked now is "
+                        f"{show_choice(show)}. Scan the disc again.")
     if not plan.can_rip(again):
         raise UserError(plan.summary)
     folder = workflow.unique_disc_folder(plan.root, plan.label)
@@ -176,10 +199,20 @@ def run_rip(plan: RipPlan, scanner, encoder, transcriber, show: Show, season: Op
     result = workflow.rip_titles(scanner, indices, folder, progress=progress)
     if not result.complete:
         kept = "".join(f"\nPartial file kept as {p}" for p in result.failed_files)
+        if result.error == "interrupted":
+            raise Cancelled(f"The rip was stopped at title {result.failed}. Finished titles: "
+                            f"{result.finished or 'none'}.{kept}\n{folder} is marked incomplete, so Match "
+                            f"leaves it out. Scan again and rip with 'Rip again' ticked.")
         raise UserError(f"The rip stopped at title {result.failed}: {result.error}\n"
                         f"Finished titles: {result.finished or 'none'}.{kept}\n"
                         f"{folder} is marked incomplete, so Match leaves it out. "
                         f"Scan again and rip with 'Rip again' ticked.")
+    if eject is not None:
+        try:
+            ejected = eject()
+        except Exception:
+            ejected = False
+        progress(EJECTED if ejected else "Ripping done (the drive would not eject); encoding continues.")
     n = encode_folder(folder, encoder, progress)
     progress(f"Encoded {n} titles." if n else "Nothing to encode.")
     titles = transcriber(folder, progress=transcribe_progress(progress))
@@ -417,8 +450,9 @@ def copy_items(rows: list[ReviewRow], show: Show, root: str):
     return workflow.copy_plan(rows, show.name, show.year, root)
 
 
-def run_copy(items, progress: Progress = _quiet):
-    """Copy with copy_episode (never overwriting), one numbered line per file."""
+def run_copy(items, progress: Progress = _quiet, should_stop: Optional[Callable[[], bool]] = None):
+    """Copy with copy_episode (never overwriting), one numbered line per file. With
+    should_stop, a copy stops part way (procs.Cancelled) and its .part file is removed."""
     count = [0]
 
     def say(_msg: str) -> None:
@@ -426,7 +460,33 @@ def run_copy(items, progress: Progress = _quiet):
         item = items[count[0] - 1]
         progress(f"Copying {count[0]} of {len(items)}: {os.path.basename(item.dest)}")
     log_action(f"window: copying {len(items)} episodes")
-    return workflow.copy_all(items, progress=say)
+    return workflow.copy_all(items, progress=say, should_stop=should_stop)
+
+
+def still_check(rows: list[ReviewRow]) -> int:
+    """How many ticked rows are still flagged CHECK (ticked without picking a new episode)."""
+    return len(check_rows(rows))
+
+
+def check_warning(rows: list[ReviewRow]) -> str:
+    """'' or a paragraph for a confirm dialog saying how many ticked rows are still CHECK."""
+    n = still_check(rows)
+    if not n:
+        return ""
+    if n == 1:
+        return "\n\n1 ticked row is still flagged CHECK: it was ticked without picking a new episode."
+    return f"\n\n{n} ticked rows are still flagged CHECK: they were ticked without picking a new episode."
+
+
+def copy_confirm_text(items, root: str, rows: list[ReviewRow]) -> str:
+    return (f"Copy {len(items)} episodes to\n{root}?\n\nFor example:\n{items[0].dest}\n\n"
+            f"Nothing already there is overwritten, and the originals in C:\\Video stay."
+            + check_warning(rows))
+
+
+def rename_confirm_text(moves, right: int, show_dir: str, rows: list[ReviewRow]) -> str:
+    return (f"Rename {len(moves) - right} files in {show_dir}?\n{right} are already right.\n\n"
+            f"The plan is saved first, so an interrupted rename can be resumed." + check_warning(rows))
 
 
 def copy_summary_text(summary) -> str:
@@ -445,6 +505,16 @@ def list_nas_shows(root: str) -> list[str]:
         return sorted((p.name for p in Path(root).iterdir() if p.is_dir()), key=str.casefold)
     except OSError as exc:
         raise UserError(f"Could not read {root}: {exc.strerror or exc}") from exc
+
+
+def _plain(s: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]", "", s.casefold())
+
+
+def folder_matches_show(folder: str, show_name: str) -> bool:
+    """'NewsRadio (1995)' matches NewsRadio; spaces, punctuation and case do not count."""
+    return _plain(name_from_folder(folder)) == _plain(show_name)
 
 
 def name_from_folder(folder: str) -> str:
@@ -530,6 +600,8 @@ def rename_plan_text(path) -> str:
 
 def friendly_error(exc: BaseException) -> str:
     """A readable one-paragraph message for an error, for the log and a dialog."""
+    if isinstance(exc, Cancelled):
+        return str(exc) or "Stopped."
     if isinstance(exc, (UserError, RenameError, RootError)):
         return str(exc)
     if isinstance(exc, subprocess.CalledProcessError):

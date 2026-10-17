@@ -109,7 +109,25 @@ def log_action(message: str, log_path: Optional[Path] = None) -> None:
 
 # ---- copy ----------------------------------------------------------------------------------
 
-def copy_episode(source, dest, log_path: Optional[Path] = None, allow_drive: bool = False) -> str:
+COPY_CHUNK = 8 * 1024 * 1024
+
+
+def _copy_stoppable(source: str, part: str, should_stop) -> None:
+    """shutil.copy2 in chunks, raising procs.Cancelled as soon as should_stop() is true."""
+    from dvd_processor.procs import Cancelled
+    with open(source, "rb") as src, open(part, "wb") as dst:
+        while True:
+            if should_stop():
+                raise Cancelled()
+            chunk = src.read(COPY_CHUNK)
+            if not chunk:
+                break
+            dst.write(chunk)
+    shutil.copystat(source, part)
+
+
+def copy_episode(source, dest, log_path: Optional[Path] = None, allow_drive: bool = False,
+                 should_stop=None) -> str:
     """Copy source to dest via dest.part, check the size, rename into place.
 
     dest must be on a UNC path (//server/share/...); a drive path only with allow_drive.
@@ -117,7 +135,8 @@ def copy_episode(source, dest, log_path: Optional[Path] = None, allow_drive: boo
 
     Returns COPIED, EXISTS (dest already there, left alone) or SIZE_MISMATCH (the .part is
     removed and dest is not created). Raises FileNotFoundError if source is missing. If the
-    copy itself fails, the .part is removed and the error raised.
+    copy itself fails, the .part is removed and the error raised. With should_stop, the copy
+    is made in chunks and stops (procs.Cancelled, .part removed) once should_stop() is true.
     """
     source, dest = str(source), str(dest)
     check_root(dest, allow_drive=allow_drive)
@@ -129,7 +148,10 @@ def copy_episode(source, dest, log_path: Optional[Path] = None, allow_drive: boo
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     part = dest + PART
     try:
-        shutil.copy2(source, part)
+        if should_stop is None:
+            shutil.copy2(source, part)
+        else:
+            _copy_stoppable(source, part, should_stop)
     except BaseException:
         _remove_quietly(part)
         log_action(f"copy failed, partial removed: {source} -> {dest}", log_path)
