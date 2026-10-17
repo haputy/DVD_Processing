@@ -6,6 +6,7 @@ A1_t00.mkv becomes MP4/A1 T00.mp4. The MKV rips are left alone.
 """
 import os
 import subprocess
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -30,9 +31,41 @@ def resolve_handbrake_path(config=None) -> str:
     return configured or default_handbrake_path()
 
 
+# Unicode categories .NET's TextInfo.ToTitleCase treats as word separators.
+_SEPARATORS = {"Zs", "Zl", "Zp", "Cc", "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po", "Sm", "Sc", "Sk", "So"}
+
+
+def dotnet_title_case(s: str) -> str:
+    """CultureInfo.TextInfo.ToTitleCase(s.ToLower()), which is what HandBrake 1.9.2's
+    StringExtensions.ToTitleCase does (read from its HandBrake.App.Core assembly).
+
+    Each word's first letter is upper-cased and the rest lower-cased. A word runs on
+    through letters, digits and apostrophes and stops at spaces, punctuation and symbols:
+    "a1b" -> "A1b", "3rd" -> "3Rd", "o'brien" -> "O'brien", "x.y" -> "X.Y".
+    """
+    s = s.lower()
+    out, i, n = [], 0, len(s)
+    while i < n:
+        c = s[i]
+        if not unicodedata.category(c).startswith("L"):
+            out.append(c)
+            i += 1
+            continue
+        out.append(c.upper())
+        i += 1
+        while i < n:
+            c = s[i]
+            if c != "'" and unicodedata.category(c) in _SEPARATORS:
+                break
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def mp4_name(stem: str) -> str:
-    """'A1_t00' -> 'A1 T00', as the HandBrake GUI names its output."""
-    return stem.replace("_", " ").title()
+    """The HandBrake GUI's output name with Andy's settings (remove underscores, title case):
+    'A1_t00' -> 'A1 T00'."""
+    return dotnet_title_case(stem.replace("_", " "))
 
 
 def mp4_path(mkv: Path) -> Path:
@@ -70,8 +103,11 @@ class HandBrakeEncoder:
             )
             tmp.replace(output_path)
         except BaseException:
-            if tmp.exists():
-                tmp.unlink()
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass  # never hide the real error behind a failed clean-up
             raise
 
     def encode_all(self, directory: Path, suffix: str = ".mkv") -> list[EncodeResult]:

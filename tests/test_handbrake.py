@@ -7,9 +7,28 @@ from dvd_processor import handbrake
 from dvd_processor.handbrake import HandBrakeEncoder, default_handbrake_path, mp4_name, mp4_path, resolve_handbrake_path
 
 
-def test_mp4_name_matches_handbrake_gui():
+def test_mp4_name_matches_real_gui_outputs():
+    # Pairs from C:/Video (NewsRadio discs) and the Arrested Development rips
     assert mp4_name("A1_t00") == "A1 T00"
-    assert mp4_name("title_t12") == "Title T12"
+    assert mp4_name("B1_t10") == "B1 T10"
+    assert mp4_name("D1_t11") == "D1 T11"
+
+
+def test_mp4_name_matches_handbrake_title_case_edge_cases():
+    # Outputs of HandBrake 1.9.2's own StringExtensions.ToTitleCase, called directly
+    cases = {
+        "MICHAEL CLAYTON-A1_t00": "Michael Clayton-A1 T00",
+        "a1b c2d": "A1b C2d",
+        "o'brien x": "O'brien X",
+        "title_t00": "Title T00",
+        "B3c_t02": "B3c T02",
+        "x.y z": "X.Y Z",
+        "3rd rock": "3Rd Rock",
+        "ab12cd": "Ab12cd",
+        "NEWSRADIO S3D1": "Newsradio S3d1",
+    }
+    for stem, want in cases.items():
+        assert mp4_name(stem) == want, stem
 
 
 def test_mp4_path_goes_in_mp4_subfolder(tmp_path):
@@ -82,3 +101,19 @@ def test_failed_encode_leaves_no_output(tmp_path):
         with pytest.raises(RuntimeError):
             HandBrakeEncoder("hb").encode_all(tmp_path)
     assert list((tmp_path / "MP4").iterdir()) == []
+
+
+def test_failed_cleanup_does_not_hide_the_real_error(tmp_path, monkeypatch):
+    (tmp_path / "A1_t00.mkv").write_text("rip")
+
+    def fail(cmd, check):
+        Path(cmd[cmd.index("--output") + 1]).write_text("partial")
+        raise KeyboardInterrupt
+
+    def locked(self, *a, **k):
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(Path, "unlink", locked)
+    with patch.object(handbrake.subprocess, "run", side_effect=fail):
+        with pytest.raises(KeyboardInterrupt):
+            HandBrakeEncoder("hb").encode_all(tmp_path)
