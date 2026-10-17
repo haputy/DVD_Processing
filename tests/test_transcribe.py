@@ -66,12 +66,17 @@ def _touch(p):
     return p
 
 
-def test_title_files_prefer_mp4(tmp_path):
+def test_title_files_prefer_each_titles_mp4(tmp_path):
     _touch(tmp_path / "A1_t00.mkv")
-    assert [p.name for p in title_files(tmp_path)] == ["A1_t00.mkv"]
-    _touch(tmp_path / "MP4" / "A1 T01.mp4")
+    _touch(tmp_path / "A1_t01.mkv")
+    assert [p.name for p in title_files(tmp_path)] == ["A1_t00.mkv", "A1_t01.mkv"]
+    # Partly encoded disc: T00 done, T01 still encoding. Neither title is lost.
     _touch(tmp_path / "MP4" / "A1 T00.mp4")
-    assert [p.name for p in title_files(tmp_path)] == ["A1 T00.mp4", "A1 T01.mp4"]
+    _touch(tmp_path / "MP4" / "A1 T01.encoding.mp4")
+    assert [p.relative_to(tmp_path).as_posix() for p in title_files(tmp_path)] ==         ["MP4/A1 T00.mp4", "A1_t01.mkv"]
+    # An MP4 whose MKV was cleared away still counts
+    _touch(tmp_path / "MP4" / "A1 T02.mp4")
+    assert [p.name for p in title_files(tmp_path)] == ["A1 T00.mp4", "A1_t01.mkv", "A1 T02.mp4"]
 
 
 def test_transcribe_disc_caches_and_skips_short_titles(tmp_path):
@@ -108,3 +113,44 @@ def test_transcribe_disc_does_not_load_model_when_all_cached(tmp_path):
 
     got = transcribe_disc(tmp_path, get_duration=lambda f: 1300.0, model_getter=no_model)
     assert got[0].text == "cached"
+
+
+def test_cache_key_is_stable_between_mkv_and_mp4(tmp_path):
+    _touch(tmp_path / "A1_t00.mkv")
+    model = FakeModel()
+    got = transcribe_disc(tmp_path, get_duration=lambda f: 1300.0, model_getter=lambda: model)
+    assert got[0].stem == "A1 T00"
+    assert transcript_path(tmp_path, "A1 T00").exists()
+    # After encoding, the MP4 is used but the cached transcript is found
+    _touch(tmp_path / "MP4" / "A1 T00.mp4")
+    got = transcribe_disc(tmp_path, get_duration=lambda f: 1300.0, model_getter=lambda: model)
+    assert len(model.calls) == 1
+    assert got[0].text == "Hello there. General Kenobi."
+
+
+def test_older_cache_under_mkv_stem_is_used(tmp_path):
+    _touch(tmp_path / "A1_t00.mkv")
+    old = transcript_path(tmp_path, "A1_t00")
+    old.parent.mkdir(parents=True)
+    old.write_text("old cache", encoding="utf-8")
+
+    def no_model():
+        raise AssertionError("model should not load")
+
+    got = transcribe_disc(tmp_path, get_duration=lambda f: 1300.0, model_getter=no_model)
+    assert got[0].text == "old cache"
+
+
+def test_unknown_duration_is_transcribed(tmp_path):
+    _touch(tmp_path / "A1_t00.mkv")
+    _touch(tmp_path / "A1_t01.mkv")
+    model = FakeModel()
+
+    def length(f):
+        if f.stem == "A1_t01":
+            raise OSError("cannot open")
+        return 0.0
+
+    got = transcribe_disc(tmp_path, get_duration=length, model_getter=lambda: model)
+    assert [(t.seconds, bool(t.text)) for t in got] == [(0.0, True), (0.0, True)]
+    assert len(model.calls) == 2
