@@ -20,9 +20,10 @@ def title(stem, text, seconds=1320):
     return TitleTranscript("C:/Video/DISC_1", stem, seconds, text)
 
 
-def test_reference_text_repeats_title_and_cuts_guest_stars():
-    ep = Episode(1, 1, "Pilot", overview="Short.", wiki_summary="Plot here. Guest stars Famous Actor.")
-    assert reference_text(ep) == "Pilot. Pilot. Pilot. Short. Plot here. "
+def test_reference_text_repeats_title_and_cuts_guest_stars_from_wikipedia_only():
+    ep = Episode(1, 1, "Pilot", overview="Guest star Bob drops by.", wiki_summary="Plot here. Guest stars Famous Actor.")
+    assert reference_text(ep) == "Pilot. Pilot. Pilot. Guest star Bob drops by. Plot here. "
+    assert reference_text(Episode(1, 1, "Pilot", wiki_summary="Plot.")) == "Pilot. Pilot. Pilot. Plot."
 
 
 def test_dialogue_beats_disc_order():
@@ -80,3 +81,26 @@ def test_empty_inputs():
     assert match_transcripts([], EPISODES) == []
     got = match_transcripts([title("a", "x")], [])
     assert got[0].episode is None and got[0].flag == FLAG_CHECK
+
+
+def test_no_dialogue_match_is_check_even_when_order_fits():
+    # Title 1 shares no words with any episode; disc order alone puts it on Volcano
+    titles = [title("a", "fire director job"), title("b", "zebra quokka narwhal")]
+    got = match_transcripts(titles, EPISODES[:2])
+    assert got[0].flag == ""
+    assert got[1].episode.title == "Volcano"
+    assert got[1].score < 0.01 and got[1].flag == FLAG_CHECK
+    assert "disc order" in got[1].note
+
+
+def test_empty_transcript_left_out_of_assignment():
+    titles = [title("a", "   "), title("b", "volcano lava erupts", seconds=0)]
+    got = match_transcripts(titles, EPISODES)
+    assert got[0].episode is None and got[0].flag == FLAG_CHECK
+    assert got[1].episode.title == "Volcano"
+
+
+def test_no_terms_remain_gives_check_rows():
+    eps = [Episode(1, 1, "The"), Episode(1, 2, "And")]
+    got = match_transcripts([title("a", "the and of"), title("b", "it is")], eps)
+    assert all(m.episode is None and m.flag == FLAG_CHECK for m in got)

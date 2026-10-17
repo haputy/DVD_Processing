@@ -1,0 +1,143 @@
+{
+ "_about": "Synthetic show for the transcript matcher: made-up word lists, not real dialogue.",
+ "regulars": [
+  "Hank",
+  "Rosa"
+ ],
+ "episodes": [
+  {
+   "season": 1,
+   "number": 1,
+   "title": "Lighthouse",
+   "overview": "Hank repaints the lighthouse lamp.",
+   "wiki_summary": "The lighthouse keeper polishes the brass lamp and fog horn. Guest star Famous Actor."
+  },
+  {
+   "season": 1,
+   "number": 2,
+   "title": "Regatta",
+   "overview": "",
+   "wiki_summary": "Sailing regatta with yachts, spinnakers and a harbour storm."
+  },
+  {
+   "season": 1,
+   "number": 3,
+   "title": "Squall",
+   "overview": "",
+   "wiki_summary": "Sailing in a harbour storm with yachts, spinnakers and a squall."
+  },
+  {
+   "season": 1,
+   "number": 4,
+   "title": "Bakery",
+   "overview": "Rosa opens a bakery.",
+   "wiki_summary": "Croissants, baguettes and sourdough starter at the new bakery."
+  },
+  {
+   "season": 1,
+   "number": 5,
+   "title": "Election",
+   "overview": "",
+   "wiki_summary": "Mayoral election with ballots, campaign posters and a recount."
+  },
+  {
+   "season": 1,
+   "number": 6,
+   "title": "Circus",
+   "overview": "",
+   "wiki_summary": "Circus arrives with trapeze acrobats, clowns and an elephant."
+  }
+ ],
+ "titles": [
+  {
+   "stem": "A1 T00",
+   "seconds": 1320,
+   "text": "Hank Hank the lighthouse lamp needs brass polish, sound the fog horn, the lamp is out"
+  },
+  {
+   "stem": "A1 T01",
+   "seconds": 1320,
+   "text": "Rosa look at the yachts and spinnakers, sailing into the harbour storm"
+  },
+  {
+   "stem": "A1 T02",
+   "seconds": 1320,
+   "text": "Hank the yachts, spinnakers, sailing out of the harbour storm"
+  },
+  {
+   "stem": "A1 T03",
+   "seconds": 1320,
+   "text": "fresh croissants and baguettes, feed the sourdough starter, bakery opens at six"
+  },
+  {
+   "stem": "A1 T04",
+   "seconds": 1320,
+   "text": "the trapeze acrobats and clowns, the circus elephant escaped, circus tent"
+  },
+  {
+   "stem": "A1 T05",
+   "seconds": 1320,
+   "text": "count the ballots again, recount the election, campaign posters, mayoral race"
+  },
+  {
+   "stem": "A1 T06",
+   "seconds": 95,
+   "text": "menu"
+  }
+ ],
+ "expected": [
+  {
+   "stem": "A1 T00",
+   "episode": [
+    1,
+    1
+   ],
+   "flag": ""
+  },
+  {
+   "stem": "A1 T01",
+   "episode": [
+    1,
+    2
+   ],
+   "flag": ""
+  },
+  {
+   "stem": "A1 T02",
+   "episode": [
+    1,
+    3
+   ],
+   "flag": ""
+  },
+  {
+   "stem": "A1 T03",
+   "episode": [
+    1,
+    4
+   ],
+   "flag": ""
+  },
+  {
+   "stem": "A1 T04",
+   "episode": [
+    1,
+    6
+   ],
+   "flag": ""
+  },
+  {
+   "stem": "A1 T05",
+   "episode": [
+    1,
+    5
+   ],
+   "flag": ""
+  },
+  {
+   "stem": "A1 T06",
+   "episode": null,
+   "flag": "EXTRA"
+  }
+ ]
+}

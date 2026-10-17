@@ -24,6 +24,7 @@ ORDER_WEIGHT = 0.05    # disc-order prior, against TF-IDF scores that run about 
 ORDER_DECAY = 1.5      # places in the disc sequence over which the prior fades
 MAX_DF = 0.5
 CONFIDENT_MARGIN = 0.02
+MIN_SIMILARITY = 0.01  # below this the dialogue says nothing, so disc order alone decided
 TOKEN_PATTERN = r"[a-zA-Z][a-zA-Z']{2,}"
 
 FLAG_CHECK = "CHECK"
@@ -45,15 +46,17 @@ class TranscriptMatch:
     score: float       # TF-IDF similarity to the chosen episode
     margin: float      # combined score over the best other episode
     flag: str          # "" when confident, CHECK to review, EXTRA when too short to be an episode
+    note: str = ""     # why a row is CHECK when it is not just a thin margin
 
 
 def reference_text(ep: Episode) -> str:
-    """Title three times, then TMDB overview and Wikipedia summary.
+    """Title three times, then the TMDB overview, then the Wikipedia summary.
 
-    Guest-star notes in the summaries name actors, not characters, so cut from "Guest star".
+    Wikipedia's guest-star notes name actors, not characters, so its summary is cut from
+    "Guest star". The TMDB overview is kept whole.
     """
-    summary = " ".join(s for s in (ep.overview, ep.wiki_summary) if s)
-    return (ep.title + ". ") * 3 + re.split(r"Guest star", summary)[0]
+    wiki = re.split(r"Guest star", ep.wiki_summary)[0]
+    return (ep.title + ". ") * 3 + " ".join(s for s in (ep.overview, wiki) if s)
 
 
 def is_episode_length(t: TitleTranscript) -> bool:
@@ -62,24 +65,41 @@ def is_episode_length(t: TitleTranscript) -> bool:
 
 def match_transcripts(titles: list[TitleTranscript], episodes: list[Episode],
                       regulars: Iterable[str] = ()) -> list[TranscriptMatch]:
-    """One result per title, in the order given (which should be disc order)."""
-    candidates = [i for i, t in enumerate(titles) if is_episode_length(t)]
-    wanted = set(candidates)
-    results: list[Optional[TranscriptMatch]] = [
-        None if i in wanted else TranscriptMatch(t, None, 0.0, 0.0, FLAG_EXTRA)
-        for i, t in enumerate(titles)
-    ]
-    if not candidates or not episodes:
+    """One result per title, in the order given (which should be disc order).
+
+    Titles too short to be episodes come back EXTRA. Titles with no transcript text, and
+    every title when no usable words remain at all, come back CHECK with no episode.
+    """
+    results: list[Optional[TranscriptMatch]] = []
+    candidates = []
+    for i, t in enumerate(titles):
+        if not is_episode_length(t):
+            results.append(TranscriptMatch(t, None, 0.0, 0.0, FLAG_EXTRA))
+        elif not t.text.strip():
+            results.append(TranscriptMatch(t, None, 0.0, 0.0, FLAG_CHECK, "no transcript text"))
+        else:
+            results.append(None)
+            candidates.append(i)
+
+    def unmatched(note: str) -> list[TranscriptMatch]:
         for i in candidates:
-            results[i] = TranscriptMatch(titles[i], None, 0.0, 0.0, FLAG_CHECK)
+            results[i] = TranscriptMatch(titles[i], None, 0.0, 0.0, FLAG_CHECK, note)
         return results  # type: ignore[return-value]
+
+    if not candidates:
+        return results  # type: ignore[return-value]
+    if not episodes:
+        return unmatched("no episodes")
 
     texts = [titles[i].text for i in candidates]
     edocs = [reference_text(e) for e in episodes]
     stop = list(ENGLISH_STOP_WORDS | {w.lower() for w in regulars})
     vec = TfidfVectorizer(stop_words=stop, sublinear_tf=True, min_df=1, max_df=MAX_DF,
                           token_pattern=TOKEN_PATTERN)
-    vec.fit(texts + edocs)
+    try:
+        vec.fit(texts + edocs)
+    except ValueError:  # "no terms remain": every word was a stop word or too common
+        return unmatched("no usable words to match on")
     sim = (vec.transform(texts) @ vec.transform(edocs).T).toarray()
 
     # Discs mostly run in episode order, so a title's place in the disc sequence is a gentle
@@ -97,14 +117,20 @@ def match_transcripts(titles: list[TitleTranscript], episodes: list[Episode],
     for r, i in enumerate(candidates):
         j = pick.get(r)
         if j is None:  # more titles than episodes
-            results[i] = TranscriptMatch(titles[i], None, 0.0, 0.0, FLAG_CHECK)
+            results[i] = TranscriptMatch(titles[i], None, 0.0, 0.0, FLAG_CHECK, "no episode left")
             continue
         others = np.delete(score[r], j)
         best_other = float(np.max(others)) if others.size else 0.0
         rank = int((score[r] > score[r, j]).sum()) + 1
         margin = float(score[r, j]) - best_other
-        flag = "" if rank == 1 and margin > CONFIDENT_MARGIN else FLAG_CHECK
-        results[i] = TranscriptMatch(titles[i], episodes[j], float(sim[r, j]), margin, flag)
+        similarity = float(sim[r, j])
+        note = ""
+        if similarity < MIN_SIMILARITY:
+            note = "dialogue does not match; placed by disc order only"
+        elif rank != 1:
+            note = "another episode scores higher"
+        flag = "" if not note and margin > CONFIDENT_MARGIN else FLAG_CHECK
+        results[i] = TranscriptMatch(titles[i], episodes[j], similarity, margin, flag, note)
     return results  # type: ignore[return-value]
 
 
