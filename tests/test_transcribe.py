@@ -154,3 +154,14 @@ def test_unknown_duration_is_transcribed(tmp_path):
     got = transcribe_disc(tmp_path, get_duration=length, model_getter=lambda: model)
     assert [(t.seconds, bool(t.text)) for t in got] == [(0.0, True), (0.0, True)]
     assert len(model.calls) == 2
+
+
+def test_title_files_ignore_case_and_sort_naturally(tmp_path):
+    _touch(tmp_path / "A1_t00.mkv")
+    _touch(tmp_path / "MP4" / "A1 t00.mp4")  # same title, different case
+    _touch(tmp_path / "MP4" / "A1 T9.mp4")
+    _touch(tmp_path / "MP4" / "A1 T10.mp4")
+    got = title_files(tmp_path)
+    assert len(got) == 3
+    assert [transcribe.title_key(f).casefold() for f in got] == ["a1 t00", "a1 t9", "a1 t10"]
+    assert transcribe.title_key(got[0]) in ("A1 T00", "A1 t00")

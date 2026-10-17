@@ -53,7 +53,8 @@ def read_disc_info(folder: Path) -> Optional[DiscInfo]:
         return None
 
 
-def _natural(name: str):
+def natural_key(name: str):
+    """Sort key that puts DISC_2 before DISC_10."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 
@@ -79,4 +80,4 @@ def disc_folders_for_show(show: Optional[str] = None, tmdb_id: Optional[int] = N
                 out.append(folder)
         elif show is not None and info.show.casefold() == show.casefold():
             out.append(folder)
-    return sorted(out, key=lambda f: _natural(f.name))
+    return sorted(out, key=lambda f: natural_key(f.name))

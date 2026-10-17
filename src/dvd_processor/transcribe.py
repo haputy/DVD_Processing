@@ -15,6 +15,7 @@ import site
 from pathlib import Path
 from typing import Callable, Optional
 
+from dvd_processor.discinfo import natural_key
 from dvd_processor.handbrake import mp4_name, mp4_path
 from dvd_processor.transcript_matcher import TitleTranscript
 
@@ -101,18 +102,19 @@ def title_files(disc: Path) -> list[Path]:
     """One file per title, in title order: its MP4 encode if there is one, else its MKV.
 
     MP4s with no MKV beside them (the rips already cleared) are included too. HandBrake's
-    temporary *.encoding.mp4 files never are.
+    temporary *.encoding.mp4 files never are. Titles are told apart ignoring case, as
+    Windows does ("A1 t00.mp4" and A1_t00.mkv are one title), and sorted naturally.
     """
     disc = Path(disc)
     by_key: dict[str, Path] = {}
     for mkv in sorted(disc.glob("*.mkv")):
         mp4 = mp4_path(mkv)
-        by_key[title_key(mkv)] = mp4 if mp4.exists() else mkv
+        by_key[title_key(mkv).casefold()] = mp4 if mp4.exists() else mkv
     for mp4 in sorted((disc / "MP4").glob("*.mp4")):
         if mp4.name.lower().endswith(ENCODING_SUFFIX):
             continue
-        by_key.setdefault(mp4.stem, mp4)
-    return [by_key[k] for k in sorted(by_key)]
+        by_key.setdefault(mp4.stem.casefold(), mp4)
+    return sorted(by_key.values(), key=lambda f: natural_key(title_key(f)))
 
 
 def duration(path: Path) -> float:

@@ -42,7 +42,7 @@ def test_copy_episode_creates_folders_and_logs(tmp_path, log):
     src = tmp_path / "src.mp4"
     src.write_bytes(b"x" * 1000)
     dest = (tmp_path / "TV" / "Show (2000)" / "Season 1" / "Show S01 E01.mp4").as_posix()
-    assert copy_episode(src, dest) == COPIED
+    assert copy_episode(src, dest, allow_drive=True) == COPIED
     assert os.path.getsize(dest) == 1000
     assert not os.path.exists(dest + ".part")
     assert src.exists()
@@ -54,7 +54,7 @@ def test_copy_episode_never_overwrites(tmp_path, log):
     src.write_bytes(b"new")
     dest = tmp_path / "dest.mp4"
     dest.write_bytes(b"old")
-    assert copy_episode(src, dest) == EXISTS
+    assert copy_episode(src, dest, allow_drive=True) == EXISTS
     assert dest.read_bytes() == b"old"
 
 
@@ -63,14 +63,14 @@ def test_copy_episode_size_mismatch_keeps_nothing(tmp_path, log, monkeypatch):
     src.write_bytes(b"abc")
     dest = tmp_path / "out" / "dest.mp4"
     monkeypatch.setattr(nas.shutil, "copy2", lambda a, b: open(b, "wb").write(b"a"))
-    assert copy_episode(src, dest) == SIZE_MISMATCH
+    assert copy_episode(src, dest, allow_drive=True) == SIZE_MISMATCH
     assert not dest.exists()
     assert not (tmp_path / "out" / "dest.mp4.part").exists()
 
 
 def test_copy_episode_missing_source(tmp_path, log):
     with pytest.raises(FileNotFoundError):
-        copy_episode(tmp_path / "nope.mp4", tmp_path / "d.mp4")
+        copy_episode(tmp_path / "nope.mp4", tmp_path / "d.mp4", allow_drive=True)
 
 
 # ---- rename --------------------------------------------------------------------------------
@@ -188,7 +188,7 @@ def test_copy_failure_removes_part(tmp_path, log, monkeypatch):
 
     monkeypatch.setattr(nas.shutil, "copy2", broken_copy)
     with pytest.raises(OSError):
-        copy_episode(src, dest)
+        copy_episode(src, dest, allow_drive=True)
     assert list((tmp_path / "out").iterdir()) == []
 
 
@@ -273,3 +273,37 @@ def test_case_variant_destination_counts_as_occupied(tmp_path, log):
     # E02 -> "show s01 e01.mp4" lands on E01 (case-insensitively), which is not moving
     with pytest.raises(RenameError):
         rename_plan_apply([(_p(d, 2), (d / "show s01 e01.mp4").as_posix())])
+
+
+def test_copy_refuses_destination_off_the_nas(tmp_path, log):
+    from dvd_processor.nas import RootError
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"x")
+    with pytest.raises(RootError):
+        copy_episode(src, "/DXP2800-4CC5/Jellyfin/TVShows/Show (2000)/Season 1/Show S01 E01.mp4")
+    with pytest.raises(RootError):
+        copy_episode(src, tmp_path / "d.mp4")  # a drive path needs allow_drive
+    assert not (tmp_path / "d.mp4").exists()
+
+
+def test_missing_sources_point_to_unfinished_plan(tmp_path, log, monkeypatch):
+    d = _season(tmp_path, [5, 6])
+    moves = [(_p(d, 5), _p(d, 6)), (_p(d, 6), _p(d, 5))]
+    real_rename = os.rename
+    calls = {"n": 0}
+
+    def stop_second(a, b):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("dropped")
+        real_rename(a, b)
+
+    monkeypatch.setattr(nas.os, "rename", stop_second)
+    with pytest.raises(OSError):
+        rename_plan_apply(moves)
+    monkeypatch.setattr(nas.os, "rename", real_rename)
+    [plan] = nas.unfinished_rename_plans()
+    with pytest.raises(RenameError) as err:
+        rename_plan_apply(moves)
+    assert str(plan) in str(err.value)
+    assert "resume_renaming" in str(err.value)

@@ -109,14 +109,18 @@ def log_action(message: str, log_path: Optional[Path] = None) -> None:
 
 # ---- copy ----------------------------------------------------------------------------------
 
-def copy_episode(source, dest, log_path: Optional[Path] = None) -> str:
+def copy_episode(source, dest, log_path: Optional[Path] = None, allow_drive: bool = False) -> str:
     """Copy source to dest via dest.part, check the size, rename into place.
+
+    dest must be on a UNC path (//server/share/...); a drive path only with allow_drive.
+    A root that lost its leading slash raises RootError before anything is copied.
 
     Returns COPIED, EXISTS (dest already there, left alone) or SIZE_MISMATCH (the .part is
     removed and dest is not created). Raises FileNotFoundError if source is missing. If the
     copy itself fails, the .part is removed and the error raised.
     """
     source, dest = str(source), str(dest)
+    check_root(dest, allow_drive=allow_drive)
     if not os.path.exists(source):
         raise FileNotFoundError(source)
     if os.path.exists(dest):
@@ -256,7 +260,12 @@ def rename_plan_apply(moves: list[tuple[str, str]], log_path: Optional[Path] = N
 
     missing = [s for s, _ in todo if not os.path.exists(s)]
     if missing:
-        raise RenameError("sources missing, nothing renamed:\n" + "\n".join(missing))
+        msg = "sources missing, nothing renamed:\n" + "\n".join(missing)
+        unfinished = unfinished_rename_plans(log_path)
+        if unfinished:
+            msg += ("\n\nAn earlier rename did not finish, which may be why. Finish it with "
+                    "resume_renaming (dvd-process resume) from:\n" + "\n".join(str(p) for p in unfinished))
+        raise RenameError(msg)
     dests = [canon(d) for _, d in todo] + [canon(d) for d in report.already_right]
     if len(set(dests)) != len(dests):
         raise RenameError("two files planned for the same destination, nothing renamed")
