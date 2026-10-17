@@ -22,6 +22,7 @@ from dvd_processor.episodes import Episode
 MIN_SECONDS = 600      # shorter titles are extras, not episodes
 ORDER_WEIGHT = 0.05    # disc-order prior, against TF-IDF scores that run about 0.02 to 0.27
 ORDER_DECAY = 1.5      # places in the disc sequence over which the prior fades
+PRIOR_MIN_COVERAGE = 0.8  # use the prior only when titles cover this share of the episodes
 MAX_DF = 0.5
 CONFIDENT_MARGIN = 0.02
 MIN_SIMILARITY = 0.01  # below this the dialogue says nothing, so disc order alone decided
@@ -106,12 +107,18 @@ def match_transcripts(titles: list[TitleTranscript], episodes: list[Episode],
     # Discs mostly run in episode order, so a title's place in the disc sequence is a gentle
     # prior: a bonus that fades within a few places. Strong dialogue still overrules it, which
     # is how an episode the DVD moved (NewsRadio's Injury, Bitch Session) lands where it is.
+    # The prior spreads the titles evenly across the episodes, so it only means something when
+    # the discs cover most of them. With a partial set (one Northern Exposure disc of four
+    # episodes against a 23-episode season) nothing says where in the season the disc falls,
+    # and the dialogue decides alone.
     n_eps, n_titles = len(episodes), len(candidates)
-    order = sorted(range(n_eps), key=lambda k: (episodes[k].season, episodes[k].number or 0))
-    epos = np.empty(n_eps)
-    epos[order] = np.arange(n_eps)
-    tpos = np.arange(n_titles) * (n_eps - 1) / max(n_titles - 1, 1)
-    score = sim + ORDER_WEIGHT * np.exp(-np.abs(tpos[:, None] - epos[None, :]) / ORDER_DECAY)
+    score = sim
+    if n_titles >= PRIOR_MIN_COVERAGE * n_eps:
+        order = sorted(range(n_eps), key=lambda k: (episodes[k].season, episodes[k].number or 0))
+        epos = np.empty(n_eps)
+        epos[order] = np.arange(n_eps)
+        tpos = np.arange(n_titles) * (n_eps - 1) / max(n_titles - 1, 1)
+        score = sim + ORDER_WEIGHT * np.exp(-np.abs(tpos[:, None] - epos[None, :]) / ORDER_DECAY)
 
     rows, cols = linear_sum_assignment(-score)
     pick = dict(zip(rows, cols))

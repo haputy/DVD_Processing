@@ -104,3 +104,16 @@ def test_no_terms_remain_gives_check_rows():
     eps = [Episode(1, 1, "The"), Episode(1, 2, "And")]
     got = match_transcripts([title("a", "the and of"), title("b", "it is")], eps)
     assert all(m.episode is None and m.flag == FLAG_CHECK for m in got)
+
+
+def test_partial_disc_set_is_matched_on_dialogue_alone():
+    # One disc of two episodes against a ten-episode season: the order prior would spread
+    # the two titles to episodes 1 and 10. With so few titles it is off, and dialogue decides.
+    from dvd_processor.episodes import Episode
+    from dvd_processor.transcript_matcher import TitleTranscript, match_transcripts
+    words = ["walrus", "glacier", "harpoon", "lantern", "tundra", "caribou", "kayak", "igloo", "salmon", "moose"]
+    eps = [Episode(3, n + 1, f"Episode {n + 1}", f"{w} {w} {w} story", "") for n, w in enumerate(words)]
+    titles = [TitleTranscript("D1", "T00", 2700, "the lantern was lit, lantern again, lantern"),
+              TitleTranscript("D1", "T01", 2700, "tundra wind, a long tundra walk, tundra")]
+    got = [m.episode.number for m in match_transcripts(titles, eps)]
+    assert got == [4, 5]
