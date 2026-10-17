@@ -179,8 +179,9 @@ def test_rip_never_reuses_a_disc_folder(env, monkeypatch):
     (env / "Video" / "SEASIDE_D1").mkdir()
     result = run(["rip", "--show", "Seaside", "--drive", "E:", "--yes"])
     assert result.exit_code == 0, result.output
-    assert ripped == [([0, 2], env / "Video" / "SEASIDE_D1_2")]
-    assert read_disc_info(env / "Video" / "SEASIDE_D1_2").label == "SEASIDE_D1"
+    assert ripped == [([0], env / "Video" / "SEASIDE_D1_2"), ([2], env / "Video" / "SEASIDE_D1_2")]
+    info = read_disc_info(env / "Video" / "SEASIDE_D1_2")
+    assert info.label == "SEASIDE_D1" and info.complete
     assert list((env / "Video" / "SEASIDE_D1").iterdir()) == []
     assert "dvd-process match" in result.output
 
@@ -215,7 +216,7 @@ def _nas_show(env):
     return show
 
 
-def fake_transcribe_files(files, cache_dir, disc, progress=None):
+def fake_transcribe_files(files, cache_dir, disc, progress=None, check_source=False):
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
     return [TitleTranscript(disc, Path(f).stem, 1320, TEXTS[Path(f).read_text()], str(f)) for f in files]
 

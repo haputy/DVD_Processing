@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from dvd_processor import workflow
@@ -96,3 +99,53 @@ def test_scan_nas_show_and_rename_moves(tmp_path):
 def test_nas_transcripts_live_in_home(tmp_config_dir):
     p = workflow.nas_transcript_dir("Arrested Development", "//NAS/TV/AD (2003)/Season 1")
     assert p == tmp_config_dir / ".dvd_processor" / "nas-transcripts" / "Arrested Development" / "Season 1"
+
+
+def test_season_number_and_clean_nas_folder():
+    assert [workflow.season_number(n) for n in ["Season 01", "season 1", "Season1", "Specials", "Season X"]] == \
+        [1, 1, 1, None, None]
+    assert workflow.clean_nas_folder("/Show (2003)/") == "Show (2003)"
+    for bad in ["..", "a/../b", "", "/"]:
+        with pytest.raises(ValueError):
+            workflow.clean_nas_folder(bad)
+
+
+def test_moving_nas_transcripts_survives_a_swap(tmp_path, tmp_config_dir):
+    season = tmp_path / "Season 1"
+    season.mkdir()
+    a, b = season / "S E01.mp4", season / "S E02.mp4"
+    a.write_text("one")
+    b.write_text("two")
+    cache = workflow.nas_transcript_dir("Show", season)
+    cache.mkdir(parents=True)
+    (cache / "S E01.txt").write_text("words of one", encoding="utf-8")
+    (cache / "S E02.txt").write_text("words of two", encoding="utf-8")
+    # The files swap names on the NAS
+    tmp = season / "t"
+    a.rename(tmp)
+    b.rename(a)
+    tmp.rename(b)
+    moved = workflow.move_nas_transcripts("Show", [(str(a), str(b)), (str(b), str(a))])
+    assert moved == 2
+    assert (cache / "S E02.txt").read_text(encoding="utf-8") == "words of one"
+    assert (cache / "S E01.txt").read_text(encoding="utf-8") == "words of two"
+    assert json.loads((cache / "S E02.source.json").read_text())["name"] == "S E02.mp4"
+
+
+def test_rip_titles_marks_complete_only_at_the_end(tmp_path, tmp_config_dir):
+    import subprocess
+
+    class Scanner:
+        def rip(self, indices, folder):
+            (Path(folder) / f"t{indices[0]}.mkv").write_text("x")
+            if indices[0] == 2:
+                raise subprocess.CalledProcessError(1, "makemkvcon")
+
+    write_disc_info(tmp_path, "S", 1, complete=False)
+    r = workflow.rip_titles(Scanner(), [0, 1], tmp_path)
+    assert r.complete and r.finished == [0, 1] and read_disc_info(tmp_path).complete
+    write_disc_info(tmp_path, "S", 1, complete=False)
+    r = workflow.rip_titles(Scanner(), [0, 2, 3], tmp_path)
+    assert not r.complete and r.finished == [0] and r.failed == 2
+    assert (tmp_path / "t2.mkv.failed").exists() and (tmp_path / "t0.mkv").exists()
+    assert not read_disc_info(tmp_path).complete

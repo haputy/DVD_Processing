@@ -30,7 +30,7 @@ from dvd_processor.nas import (
     rename_plan_apply, resume_renaming, unfinished_rename_plans,
 )
 from dvd_processor.review import (
-    apply_review, duplicate_episodes, episode_code, parse_review, rows_from_matches,
+    apply_review, check_rows, duplicate_episodes, episode_code, parse_review, rows_from_matches,
     show_review_table,
 )
 from dvd_processor.tmdb import TmdbClient, TmdbShowDetails
@@ -53,13 +53,23 @@ def make_client(config: Config) -> TmdbClient:
 
 
 def resolve_show(client: TmdbClient, name: str, yes: bool) -> TmdbShowDetails:
-    """The show on TMDB: the first result with --yes, else a numbered pick."""
+    """The show on TMDB. With --yes only an unambiguous result is taken: the first result
+    must match the name exactly (ignoring case) and be the only one that does. Otherwise
+    a numbered pick."""
     results = client.search_show(name)
     if not results:
         console.print(f"[red]No TMDB results for '{name}'.[/red]")
         sys.exit(1)
     pick = results[0]
-    if not yes and len(results) > 1:
+    if yes:
+        exact = [r for r in results if r.name.casefold() == name.strip().casefold()]
+        if len(exact) != 1 or exact[0] is not results[0]:
+            console.print(f"[red]TMDB search for '{name}' is ambiguous under --yes:[/red]")
+            for r in results[:10]:
+                console.print(f"  {r.name} ({r.year or '?'}), TMDB {r.tmdb_id}")
+            console.print("Run again without --yes to pick one.")
+            sys.exit(1)
+    elif len(results) > 1:
         shown = results[:10]
         console.print("\nTMDB found:")
         for i, s in enumerate(shown, start=1):
@@ -121,8 +131,16 @@ def review_loop(rows, all_episodes, yes: bool, title: str) -> bool:
     show_review_table(rows, console, title)
     if yes:
         if duplicate_episodes(rows):
-            console.print("[red]Two rows have the same episode; fix them without --yes.[/red]")
-            return False
+            console.print("[red]Two rows have the same episode; run again without --yes to fix them.[/red]")
+            sys.exit(1)
+        flagged = check_rows(rows)
+        if flagged:
+            console.print("[red]These rows are flagged CHECK, so nothing was done under --yes: "
+                          + ", ".join(f"{n} ({rows[n - 1].match.title.stem}, "
+                                      f"{episode_code(rows[n - 1].episode)})" for n in flagged)
+                          + ".[/red]")
+            console.print("Run again without --yes to review them.")
+            sys.exit(1)
         return True
     console.print("Type [bold]ok[/bold] to accept, [bold]3=S02E05[/bold] to change a row, "
                   "[bold]skip 3[/bold] to leave one out, or [bold]q[/bold] to stop.")
@@ -148,6 +166,14 @@ def print_unused(rows, episodes) -> None:
     unused = [e for e in episodes if (e.season, e.number) not in used]
     if unused:
         console.print("Episodes with no title: " + ", ".join(f"{episode_code(e)} {e.title}" for e in unused))
+
+
+def refuse_surplus(titles, episodes, yes: bool) -> None:
+    if yes and workflow.too_many_titles(titles, episodes):
+        console.print(f"[red]{len(titles)} titles for {len(episodes)} episodes: more titles than episodes "
+                      f"by over {workflow.MAX_SURPLUS_TITLES}, so nothing was done under --yes. "
+                      f"Check --season and the discs, or run without --yes.[/red]")
+        sys.exit(1)
 
 
 def choose_root(dest_root: Optional[str], config: Config) -> str:
@@ -193,8 +219,10 @@ def scan(drive):
 @main.command()
 @click.option("--show", "show_name", required=True, help="TV show name, looked up on TMDB")
 @click.option("--drive", default=None, help="Optical drive letter (e.g. E:)")
-@click.option("--yes", "-y", is_flag=True, help="Take the first TMDB result and do not ask")
-def rip(show_name, drive, yes):
+@click.option("--season", type=int, default=None, help="The season this disc holds, if known")
+@click.option("--again", is_flag=True, help="Rip a disc whose folder already exists for this show")
+@click.option("--yes", "-y", is_flag=True, help="Take the TMDB match and do not ask")
+def rip(show_name, drive, season, again, yes):
     """Rip one disc: every title of 10 minutes or more, then encode and transcribe."""
     config = Config()
     client = make_client(config)
@@ -211,6 +239,11 @@ def rip(show_name, drive, yes):
     if not label:
         existing = len(disc_folders_for_show(show.name, show.tmdb_id, root))
         label = workflow.fallback_label(show.name, existing)
+    before = workflow.already_ripped(root, label, show.name, show.tmdb_id)
+    if before is not None and not again:
+        console.print(f"[red]{before} already holds this disc of {show.name}, so it looks already ripped. "
+                      f"Use --again to rip it into a new folder.[/red]")
+        sys.exit(1)
     folder = workflow.unique_disc_folder(root, label)
     console.print(f"{len(keep)} of {len(titles)} titles are 10 minutes or more:")
     for t in keep:
@@ -219,9 +252,17 @@ def rip(show_name, drive, yes):
     if not confirm("Rip, encode and transcribe?", yes):
         return
     folder.mkdir(parents=True)
-    write_disc_info(folder, show.name, show.tmdb_id, label)
+    write_disc_info(folder, show.name, show.tmdb_id, label, complete=False, season=season)
     log_action(f"rip {show.name} disc {label} -> {folder}, titles {[t.index for t in keep]}")
-    scanner.rip([t.index for t in keep], folder)
+    result = workflow.rip_titles(scanner, [t.index for t in keep], folder)
+    if not result.complete:
+        console.print(f"[red]Rip stopped at title {result.failed}: {result.error}[/red]")
+        console.print(f"Finished titles: {result.finished or 'none'}")
+        for p in result.failed_files:
+            console.print(f"  partial file kept as {p}")
+        console.print(f"{folder} is marked incomplete, so match will leave it out. "
+                      f"Rip the disc again with --again.")
+        sys.exit(1)
     encode_and_transcribe(folder, config)
     console.print(f"\n[green]Disc done: {folder}[/green]")
     console.print(f"Next: put in the next disc and run [bold]dvd-process rip --show \"{show_name}\"[/bold],"
@@ -230,9 +271,10 @@ def rip(show_name, drive, yes):
 
 @main.command()
 @click.option("--show", "show_name", required=True, help="TV show name, looked up on TMDB")
-@click.option("--yes", "-y", is_flag=True, help="Take the first TMDB result and do not ask")
+@click.option("--season", type=int, default=None, help="The season these discs hold, if known")
+@click.option("--yes", "-y", is_flag=True, help="Take the TMDB match and do not ask")
 @click.argument("folders", nargs=-1, required=True, type=click.Path(file_okay=False))
-def add(show_name, yes, folders):
+def add(show_name, season, yes, folders):
     """Register existing rip folders for a show, encode missing MP4s and transcribe."""
     config = Config()
     paths = [Path(f) for f in folders]
@@ -249,7 +291,7 @@ def add(show_name, yes, folders):
         return
     for p in paths:
         try:
-            _, what = workflow.register_disc(p, show.name, show.tmdb_id)
+            _, what = workflow.register_disc(p, show.name, show.tmdb_id, season)
         except ValueError as exc:
             console.print(f"[red]{exc}; skipped[/red]")
             continue
@@ -269,7 +311,13 @@ def match(show_name, season, yes, dest_root):
     root = choose_root(dest_root, config)
     client = make_client(config)
     show = resolve_show(client, show_name, yes)
-    folders = disc_folders_for_show(show.name, show.tmdb_id, rip_root(config))
+    folders = disc_folders_for_show(
+        show.name, show.tmdb_id, rip_root(config),
+        on_skip=lambda f, why: console.print(f"[yellow]Leaving out {f}: {why}[/yellow]"))
+    folders, untagged = workflow.discs_for_season(folders, season)
+    if untagged:
+        console.print(f"[yellow]Not tagged with a season, used anyway: {', '.join(f.name for f in untagged)} "
+                      f"(tag them with add --season).[/yellow]")
     if not folders:
         console.print(f"[red]No disc folders for {show.name} under {rip_root(config)}. "
                       f"Rip with 'dvd-process rip' or register with 'dvd-process add'.[/red]")
@@ -283,6 +331,7 @@ def match(show_name, season, yes, dest_root):
         sys.exit(1)
     regulars = regulars_for_show(client, show.tmdb_id, show.name, config)
     titles = workflow.gather_titles(folders, _transcriber(), progress=say)
+    refuse_surplus(titles, episodes, yes)
     rows = rows_from_matches(_matcher()(titles, episodes, regulars))
     title = f"{show.name}: {len(titles)} titles, {len(episodes)} episodes"
     if not review_loop(rows, all_episodes, yes, title):
@@ -314,30 +363,36 @@ def fix(show_name, nas_folder, season, yes, dest_root):
     """Rename a show already on the NAS by matching its files' dialogue."""
     config = Config()
     root = choose_root(dest_root, config)
-    show_dir = f"{root}/{nas_folder.strip('/')}"
+    try:
+        nas_folder = workflow.clean_nas_folder(nas_folder)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+    show_dir = f"{root}/{nas_folder}"
     if not Path(show_dir).is_dir():
         console.print(f"[red]No folder {show_dir}[/red]")
         sys.exit(1)
     client = make_client(config)
     show = resolve_show(client, show_name, yes)
-    nas = workflow.scan_nas_show(Path(show_dir))
+    nas = workflow.scan_nas_show(Path(show_dir), season)
     transcribe_files = _file_transcriber()
     titles = []
     for folder, videos in nas.seasons:
         titles += transcribe_files(videos, workflow.nas_transcript_dir(show.name, folder), str(folder),
-                                   progress=say)
+                                   progress=say, check_source=True)
     if not titles:
         console.print("[red]No video files in Season folders.[/red]")
         sys.exit(1)
     all_episodes = build_episodes(client, show.tmdb_id, show.name)
     episodes = workflow.limit_to_season(all_episodes, season)
     regulars = regulars_for_show(client, show.tmdb_id, show.name, config)
+    refuse_surplus(titles, episodes, yes)
     rows = rows_from_matches(_matcher()(titles, episodes, regulars))
     if not review_loop(rows, all_episodes, yes, f"{show.name} on the NAS"):
         console.print("Stopped, nothing renamed.")
         return
     print_unused(rows, episodes)
-    moves = workflow.rename_moves(rows, show.name, show_dir)
+    moves = workflow.rename_moves(rows, show.name, show_dir, nas.season_folders())
     right = sum(canon_exact(s) == canon_exact(d) for s, d in moves)
     stray = list(nas.strays) + [Path(r.match.title.path) for r in rows if not r.will_act]
     if stray:
@@ -354,7 +409,9 @@ def fix(show_name, nas_folder, season, yes, dest_root):
     except RenameError as exc:
         console.print(f"[red]{exc}[/red]")
         sys.exit(1)
-    console.print(f"[green]{len(report.renamed)} renamed[/green], {len(report.already_right)} already right.")
+    moved = workflow.move_nas_transcripts(show.name, report.renamed)
+    console.print(f"[green]{len(report.renamed)} renamed[/green], {len(report.already_right)} already right "
+                  f"({moved} cached transcripts moved with them).")
 
 
 @main.command()
@@ -370,6 +427,9 @@ def resume(yes):
         console.print(f"  {i}. {p.name}: {len(moves)} files, stopped in {phase}"
                       + (f", e.g. {moves[0][1]}" if moves else ""))
     plan = plans[0]
+    if len(plans) > 1 and yes:
+        console.print("[red]More than one unfinished rename; run without --yes to choose.[/red]")
+        sys.exit(1)
     if len(plans) > 1:
         n = IntPrompt.ask("Which one", default=1)
         plan = plans[max(1, min(n, len(plans))) - 1]
