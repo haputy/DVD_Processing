@@ -156,7 +156,8 @@ class RipResult:
         return self.failed is None
 
 
-def rip_titles(scanner, indices: list[int], folder: Path) -> RipResult:
+def rip_titles(scanner, indices: list[int], folder: Path,
+               progress: Optional[Callable[[str], None]] = None) -> RipResult:
     """Rip titles one at a time into folder, marking disc.json complete only when all have.
 
     On a makemkvcon error or Ctrl+C, the partial MKV of the title in progress is renamed to
@@ -164,7 +165,9 @@ def rip_titles(scanner, indices: list[int], folder: Path) -> RipResult:
     """
     folder = Path(folder)
     result = RipResult()
-    for idx in indices:
+    for n, idx in enumerate(indices, start=1):
+        if progress:
+            progress(f"Ripping title {idx} ({n} of {len(indices)})")
         before = {p.name for p in folder.glob("*.mkv")}
         try:
             scanner.rip([idx], folder)

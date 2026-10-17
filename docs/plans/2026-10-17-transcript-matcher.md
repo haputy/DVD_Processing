@@ -111,5 +111,6 @@ Config keys: `tmdb_api_key`, `rip_root` (C:\Video), `nas_tv_root`
 
 ## Out of scope for now
 
-The GUI keeps working for scanning, but the new flow is CLI first; the GUI catches up after.
+The window caught up the same day: `gui.py` ("DVD to Jellyfin") calls the same steps through
+`app_logic.py`, and the old duration-matcher window was removed.
 OpenSubtitles is a possible later reference source for shows with thin summaries.

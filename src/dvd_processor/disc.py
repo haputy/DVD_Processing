@@ -45,10 +45,18 @@ def volume_label(drive: str) -> str:
         return ""
 
 
+CREATE_NO_WINDOW = 0x08000000
+
+
 class DiscScanner:
-    def __init__(self, drive: str, makemkv_path: str = "makemkvcon"):
+    def __init__(self, drive: str, makemkv_path: str = "makemkvcon", quiet: bool = False):
+        """quiet (for the window): no console window for makemkvcon and its output dropped."""
         self.drive = drive
         self.makemkv_path = makemkv_path
+        self.quiet = quiet
+
+    def _no_window(self) -> dict:
+        return {"creationflags": CREATE_NO_WINDOW} if self.quiet and os.name == "nt" else {}
 
     def scan(self) -> list[DiscTitle]:
         return self.scan_with_label()[0]
@@ -61,6 +69,7 @@ class DiscScanner:
             stderr=subprocess.PIPE,
             text=True,
             check=True,
+            **self._no_window(),
         )
         self.last_output = result.stdout
         label = parse_disc_label(result.stdout) or volume_label(self.drive)
@@ -72,6 +81,7 @@ class DiscScanner:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            **self._no_window(),
         )
         drive_upper = self.drive.upper().rstrip("\\")
         for line in result.stdout.splitlines():
@@ -136,4 +146,6 @@ class DiscScanner:
                     str(output_dir),
                 ],
                 check=True,
+                **({"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, **self._no_window()}
+                   if self.quiet else {}),
             )

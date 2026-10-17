@@ -41,7 +41,23 @@ A show already on the NAS in the wrong order can be fixed in place with
 `dvd-process fix --show "Arrested Development" --nas-folder "Arrested Development (2003)"`.
 If a rename on the NAS is interrupted, `dvd-process resume` finishes it.
 
-`dvd-process scan` lists what is on the disc in the drive. The old window is still there:
-`python -m dvd_processor gui`.
+`dvd-process scan` lists what is on the disc in the drive.
+
+## The window
+
+`python -m dvd_processor gui` (or `launch.bat`, or the Desktop shortcut that
+`make_shortcut.ps1` makes) opens "DVD to Jellyfin", which does the same as the commands:
+
+- Type the show at the top and click Find, then check the dropdown picked the right one
+  (it shows the year and TMDB id). Season is optional. The drive with a disc in it is picked.
+- **Rip disc**: Scan disc lists the titles and which will be ripped (play-alls and extras are
+  skipped). "Rip, encode and transcribe" does the rest and ejects the disc. Repeat per disc.
+- **Match and copy**: Match fills the table. Yellow rows are CHECK and start unticked; click
+  an episode to change it (the row becomes FIXED and ticked). Copy to NAS stays disabled
+  while two ticked rows share an episode.
+- **Fix a show on the NAS**: pick the show's folder, Match, then Rename the ticked rows. An
+  unfinished rename shows a banner with Resume.
+
+The log at the bottom shows progress; full detail goes to `~/.dvd_processor/gui.log`.
 
 See `docs/plans/2026-10-17-transcript-matcher.md` for how the matching works.

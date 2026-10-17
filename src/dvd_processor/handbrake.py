@@ -89,9 +89,20 @@ class EncodeResult:
 
 
 class HandBrakeEncoder:
-    def __init__(self, handbrake_path: Optional[str] = None, preset: str = DEFAULT_PRESET):
+    def __init__(self, handbrake_path: Optional[str] = None, preset: str = DEFAULT_PRESET,
+                 quiet: bool = False):
+        """quiet (for the window): no console window, and HandBrake's progress output dropped."""
         self.handbrake_path = handbrake_path or default_handbrake_path()
         self.preset = preset
+        self.quiet = quiet
+
+    def _quiet_kwargs(self) -> dict:
+        if not self.quiet:
+            return {}
+        kw = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        if os.name == "nt":
+            kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        return kw
 
     def encode(self, input_path: Path, output_path: Path) -> None:
         """Encode to a temporary name beside the output, then rename, so a stopped encode never
@@ -108,6 +119,7 @@ class HandBrakeEncoder:
                     "--preset", self.preset,
                 ],
                 check=True,
+                **self._quiet_kwargs(),
             )
             tmp.replace(output_path)
         except BaseException:

@@ -6,6 +6,7 @@
     dvd-process fix --show "Arrested Development" --nas-folder "Arrested Development (2003)"
     dvd-process resume                        finish an interrupted NAS rename
     dvd-process scan                          list the titles on the disc in the drive
+    dvd-process gui                           the "DVD to Jellyfin" window
 
 Commands that change files ask first unless given --yes, and log to
 ~/.dvd_processor/actions.log.
@@ -431,6 +432,13 @@ def fix(show_name, tmdb_id, nas_folder, season, yes, dest_root):
     moved = workflow.move_nas_transcripts(show.name, report.renamed)
     console.print(f"[green]{len(report.renamed)} renamed[/green], {len(report.already_right)} already right "
                   f"({moved} cached transcripts moved with them).")
+
+
+@main.command()
+def gui():
+    """Open the "DVD to Jellyfin" window."""
+    from dvd_processor.gui import run
+    run()
 
 
 @main.command()
