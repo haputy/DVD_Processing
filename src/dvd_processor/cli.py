@@ -231,15 +231,19 @@ def rip(show_name, drive, season, again, yes):
     scanner = DiscScanner(drive=drive, makemkv_path=resolve_makemkv_path(config))
     console.print(f"\nScanning disc in drive [bold]{drive}[/bold]...")
     titles, label = scanner.scan_with_label()
-    keep = [t for t in titles if t.duration_secs >= workflow.MIN_RIP_SECONDS]
+    keep = workflow.episode_titles(titles)
     if not keep:
         console.print("[red]No titles of 10 minutes or more on this disc.[/red]")
         sys.exit(1)
+    dropped = [t for t in titles if t.duration_secs >= workflow.MIN_RIP_SECONDS and t not in keep]
+    for t in dropped:
+        console.print(f"Skipping title {t.index} ({t.duration_secs // 60} min): looks like a play-all of the episodes")
+    fingerprint = [t.duration_secs for t in titles]
     root = rip_root(config)
     if not label:
         existing = len(disc_folders_for_show(show.name, show.tmdb_id, root))
         label = workflow.fallback_label(show.name, existing)
-    before = workflow.already_ripped(root, label, show.name, show.tmdb_id)
+    before = workflow.already_ripped(root, label, show.name, show.tmdb_id, fingerprint)
     if before is not None and not again:
         console.print(f"[red]{before} already holds this disc of {show.name}, so it looks already ripped. "
                       f"Use --again to rip it into a new folder.[/red]")
@@ -252,7 +256,8 @@ def rip(show_name, drive, season, again, yes):
     if not confirm("Rip, encode and transcribe?", yes):
         return
     folder.mkdir(parents=True)
-    write_disc_info(folder, show.name, show.tmdb_id, label, complete=False, season=season)
+    write_disc_info(folder, show.name, show.tmdb_id, label, complete=False, season=season,
+                    titles=fingerprint)
     log_action(f"rip {show.name} disc {label} -> {folder}, titles {[t.index for t in keep]}")
     result = workflow.rip_titles(scanner, [t.index for t in keep], folder)
     if not result.complete:

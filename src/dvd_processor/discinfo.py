@@ -25,6 +25,10 @@ class DiscInfo:
     ripped: str  # ISO date and time
     complete: bool = True
     season: Optional[int] = None
+    # Every title's length in seconds, in disc order. Discs of one show often share a volume
+    # label (every Northern Exposure disc is NORTHERN_EXPOSURE), so this is what tells a
+    # re-rip of the same disc from the next disc in the set.
+    titles: Optional[list] = None
 
     def belongs_to(self, show: Optional[str], tmdb_id: Optional[int]) -> bool:
         """Same show: by TMDB id when both have one, else by name ignoring case."""
@@ -40,7 +44,7 @@ def rip_root(config=None) -> Path:
 
 def write_disc_info(folder: Path, show: str, tmdb_id: Optional[int], label: Optional[str] = None,
                     ripped: Optional[str] = None, complete: bool = True,
-                    season: Optional[int] = None) -> DiscInfo:
+                    season: Optional[int] = None, titles: Optional[list] = None) -> DiscInfo:
     folder = Path(folder)
     info = DiscInfo(
         show=show,
@@ -49,6 +53,7 @@ def write_disc_info(folder: Path, show: str, tmdb_id: Optional[int], label: Opti
         ripped=ripped or datetime.now().isoformat(timespec="seconds"),
         complete=complete,
         season=season,
+        titles=[int(x) for x in titles] if titles is not None else None,
     )
     save_disc_info(folder, info)
     return info
@@ -71,7 +76,8 @@ def read_disc_info(folder: Path) -> Optional[DiscInfo]:
         season = d.get("season")
         return DiscInfo(show=d["show"], tmdb_id=d.get("tmdb_id"), label=d.get("label", Path(folder).name),
                         ripped=d.get("ripped", ""), complete=bool(d.get("complete", True)),
-                        season=int(season) if season is not None else None)
+                        season=int(season) if season is not None else None,
+                        titles=[int(x) for x in d["titles"]] if d.get("titles") is not None else None)
     except (json.JSONDecodeError, KeyError, OSError, ValueError, TypeError):
         return None
 

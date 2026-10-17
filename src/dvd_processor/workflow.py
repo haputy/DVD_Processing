@@ -55,12 +55,54 @@ def unique_disc_folder(root: Path, label: str) -> Path:
     return p
 
 
-def already_ripped(root: Path, label: str, show: str, tmdb_id: Optional[int]) -> Optional[Path]:
-    """root/label when it is already a disc folder of this show (the same disc ripped
-    before), else None. A clash with another show or an unregistered folder is not this."""
-    p = Path(root) / safe_label(label)
+def same_disc(a: Optional[list], b: Optional[list], tolerance: int = 2) -> bool:
+    """Two discs are the same when they have the same titles, each within a couple of seconds."""
+    return a is not None and b is not None and len(a) == len(b) and \
+        all(abs(int(x) - int(y)) <= tolerance for x, y in zip(a, b))
+
+
+def already_ripped(root: Path, label: str, show: str, tmdb_id: Optional[int],
+                   fingerprint: Optional[list] = None) -> Optional[Path]:
+    """The folder that already holds this disc of this show, else None.
+
+    With a fingerprint (every title's length), any disc folder of the show with the same
+    titles counts, whatever its label, and a folder with the same label but different titles
+    is the next disc in a set that shares one label. Without one, or against a folder ripped
+    before fingerprints were stored, root/label of this show counts, as before.
+    """
+    root = Path(root)
+    p = root / safe_label(label)
+    if fingerprint is not None and root.is_dir():
+        for d in sorted(x for x in root.iterdir() if x.is_dir()):
+            info = read_disc_info(d)
+            if info is not None and info.belongs_to(show, tmdb_id) and same_disc(info.titles, fingerprint):
+                return d
     info = read_disc_info(p) if p.is_dir() else None
-    return p if info is not None and info.belongs_to(show, tmdb_id) else None
+    if info is None or not info.belongs_to(show, tmdb_id):
+        return None
+    return p if fingerprint is None or info.titles is None else None
+
+
+def episode_titles(titles: list, min_seconds: int = MIN_RIP_SECONDS) -> list:
+    """The titles worth ripping as episodes: 10 minutes or more, without a "play all" title.
+
+    A play-all strings the disc's episodes together, so it runs at least 1.8 times the
+    typical title and about as long as the shorter titles added up (Northern Exposure season
+    3 disc 1: four 46-minute episodes and a 3:03 play-all). A disc with a single long title,
+    a movie, keeps it.
+    """
+    keep = [t for t in titles if t.duration_secs >= min_seconds]
+    if len(keep) < 3:
+        return keep
+    lengths = sorted(t.duration_secs for t in keep)
+    median = lengths[len(lengths) // 2]
+    out = []
+    for t in keep:
+        shorter = sum(x.duration_secs for x in keep if x.duration_secs < t.duration_secs)
+        if t.duration_secs >= 1.8 * median and shorter and t.duration_secs >= 0.85 * shorter:
+            continue
+        out.append(t)
+    return out
 
 
 def register_disc(folder: Path, show: str, tmdb_id: Optional[int],

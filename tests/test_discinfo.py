@@ -16,7 +16,8 @@ def test_write_and_read_round_trip(tmp_path):
     assert info.label == "NEWSRADIO_DISC_1"
     raw = json.loads((folder / DISC_JSON).read_text(encoding="utf-8"))
     assert raw == {"show": "NewsRadio", "tmdb_id": 1234, "label": "NEWSRADIO_DISC_1",
-                   "ripped": "2026-10-17T10:00:00", "complete": True, "season": None}
+                   "ripped": "2026-10-17T10:00:00", "complete": True, "season": None,
+                   "titles": None}
     assert read_disc_info(folder) == info
 
 
