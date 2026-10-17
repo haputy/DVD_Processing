@@ -60,6 +60,11 @@ rest done.
 - PyAV 16 breaks faster-whisper 1.2.1: pin `av<16`.
 - On Windows, add the `nvidia/*/bin` folders from site-packages to the DLL search path before
   importing faster_whisper, or CUDA fails to find cublas64_12.dll.
+- The CPU fallback catches CUDA failures that raise a Python exception (a missing DLL, no
+  driver, out of memory at load or on the warm-up transcription). A hard CUDA crash that
+  kills the process (a native access violation in the driver or CTranslate2) is not caught:
+  the run stops and has to be restarted, with the GPU disabled if it keeps happening.
+  Cached transcripts mean a restart only redoes the title that was in progress.
 - Microsoft Store Python redirects venvs under `%LOCALAPPDATA%\Packages\...`; create the venv
   with a non-Store Python if available, or use the redirected path.
 
