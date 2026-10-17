@@ -17,6 +17,15 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+transcribe = [
+    "faster-whisper>=1.2",
+    "av<16",
+    "numpy",
+    "scipy",
+    "scikit-learn",
+    "nvidia-cublas-cu12; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cudnn-cu12==9.*; sys_platform == 'win32' or sys_platform == 'linux'",
+]
 
 [project.scripts]
 dvd-process = "dvd_processor.cli:main"
