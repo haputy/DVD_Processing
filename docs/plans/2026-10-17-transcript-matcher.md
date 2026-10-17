@@ -53,6 +53,35 @@ rest done.
    A **rename** mode exists for shows already on the NAS: two passes through `.renaming`
    names, files already right are skipped, and an interrupted run can be resumed.
 
+## The CLI (built 17 October 2026)
+
+`dvd-process <command>`, a click group. Commands that change files ask first unless given
+`--yes`, and log every step to `~/.dvd_processor/actions.log`.
+
+- `scan [--drive E:]`: list the titles on the disc in the drive, with the disc label.
+- `rip --show NAME [--drive E:] [--yes]`: pick the show on TMDB, scan, rip every title of
+  10 minutes or more into `<rip_root>\<label>` (label from MakeMKV's CINFO, else the drive's
+  volume label, else `SHOW_D<n>`; an existing folder gets `_2`, `_3`, never reused), write
+  `disc.json`, encode, transcribe, say what is next.
+- `add --show NAME FOLDER...`: register existing rip folders (the `C:\Video` backlog):
+  `disc.json`, encode only the missing MP4s, transcribe.
+- `match --show NAME [--season N] [--yes] [--dest-root PATH]`: every disc folder of the show
+  in natural order, TMDB episodes plus Wikipedia, regulars from TMDB plus config
+  `regulars_extra`. The review table shows disc, title, minutes, SxxExx, episode title,
+  score, margin, flag and note; type `ok`, `3=S02E05`, `skip 3`, `unskip 3`, or `q`. On ok,
+  copy to the NAS (or `--dest-root`) and summarise copied, already there and failed.
+  `--season` limits the episodes considered; it does not limit the discs. With `--yes` every
+  assigned row is copied, CHECK rows included.
+- `fix --show NAME --nas-folder "Show (Year)" [--season N] [--yes] [--dest-root PATH]`: for
+  a show already on the NAS. Transcribes its Season folders into
+  `~/.dvd_processor/nas-transcripts/<show>/<Season n>/` (never onto the NAS), matches, and on
+  ok renames with the two-pass rename. Files that are not episodes are listed, never moved.
+- `resume [--yes]`: list unfinished renames (`~/.dvd_processor/rename-*.json`) and finish one.
+
+Config keys: `tmdb_api_key`, `rip_root` (C:\Video), `nas_tv_root`
+(//DXP2800-4CC5/Jellyfin/TVShows), `handbrake_path`, `makemkv_path`, `default_drive`,
+`regulars_extra` ({"Show name": ["Extra", "Words"]}).
+
 ## Lessons from the prototype to carry over
 
 - Use forward-slash UNC paths (`//DXP2800-4CC5/Jellyfin/...`) internally, and compare paths
