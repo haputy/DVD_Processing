@@ -85,7 +85,7 @@ def test_get_show_details_skips_specials(client):
     assert show.number_of_episodes == 97
 
 
-def test_get_regulars_keeps_main_cast_first_names(client):
+def test_get_regulars_keeps_main_cast_names(client):
     response = {"cast": [
         {"total_episode_count": 97, "roles": [{"character": "Dave Nelson"}]},
         {"total_episode_count": 90, "roles": [{"character": "Bill McNeal / Narrator (voice)"}]},
@@ -96,4 +96,18 @@ def test_get_regulars_keeps_main_cast_first_names(client):
     with patch("dvd_processor.tmdb.requests.get") as mock_get:
         _respond(mock_get, response)
         regulars = client.get_regulars(3)
-    assert regulars == ["Dave", "Bill", "Lisa"]
+    assert regulars == ["Dave", "Nelson", "Bill", "McNeal", "Lisa", "Miller"]
+
+
+def test_character_names():
+    from dvd_processor.tmdb import character_names
+    assert character_names('George "Pop Pop" Bluth Sr.') == ["George", "Bluth"]
+    assert character_names("Himself") == []
+    assert character_names("Matthew Brock / Narrator (voice)") == ["Matthew", "Brock"]
+
+
+def test_requests_have_a_timeout(client):
+    with patch("dvd_processor.tmdb.requests.get") as mock_get:
+        _respond(mock_get, {"results": []})
+        client.search_show("x")
+    assert mock_get.call_args.kwargs["timeout"] == 30

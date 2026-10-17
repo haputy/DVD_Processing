@@ -102,3 +102,56 @@ def test_build_episodes_survives_wikipedia_failure():
     eps = build_episodes(_client(), 5, fetch=broken)
     assert len(eps) == 3
     assert all(e.wiki_summary == "" for e in eps)
+
+
+def test_wiki_request_follows_redirects(monkeypatch):
+    from dvd_processor import episodes
+    seen = {}
+
+    def fake_get(url, params, headers, timeout):
+        seen.update(params)
+        resp = MagicMock()
+        resp.json.return_value = {"parse": {"wikitext": ""}}
+        return resp
+
+    monkeypatch.setattr(episodes.requests, "get", fake_get)
+    episodes.fetch_wikitext("List of X episodes")
+    assert seen["redirects"] == 1
+
+
+def test_season_pages_fill_seasons_the_list_page_lacks():
+    calls = []
+
+    def fetch(page):
+        calls.append(page)
+        if page.startswith("List of"):
+            return LIST_PAGE  # seasons 1 and 2 only
+        return "{{Episode list\n | EpisodeNumber2 = 1\n | Title = Late One\n | ShortSummary = S\n}}"
+
+    eps = wikipedia_episodes("Show", [1, 2, 3], fetch=fetch)
+    assert calls == ["List of Show episodes", "Show season 3"]
+    assert [(e["season"], e["title"]) for e in eps][-1] == (3, "Late One")
+
+
+def test_fuzzy_attach_skips_entries_claimed_exactly():
+    # "Led Zeppelin II" must not take "Led Zeppelin"'s summary when Wikipedia spells it differently
+    episodes = [Episode(2, 18, "Led Zeppelin"), Episode(2, 21, "Led Zepelin II")]
+    wiki = [{"season": 2, "title": "Led Zeppelin", "summary": "first"},
+            {"season": 2, "title": "Led Zeppelin II", "summary": "second"}]
+    assert attach_wiki_summaries(episodes, wiki) == 2
+    assert episodes[0].wiki_summary == "first"
+    assert episodes[1].wiki_summary == "second"
+    # With only the first in Wikipedia, the near miss gets nothing rather than a stolen summary
+    episodes = [Episode(2, 18, "Led Zeppelin"), Episode(2, 21, "Led Zeppelin I")]
+    attach_wiki_summaries(episodes, wiki[:1])
+    assert episodes[1].wiki_summary == ""
+
+
+def test_regulars_for_show_adds_config_extras():
+    from dvd_processor.episodes import regulars_for_show
+    client = MagicMock()
+    client.get_regulars.return_value = ["Dave", "Nelson"]
+    config = {"regulars_extra": {"newsradio": ["WNYX", "Max", "Dave"], "Other": ["Nope"]}}
+    assert regulars_for_show(client, 5, "NewsRadio", config) == ["Dave", "Nelson", "WNYX", "Max"]
+    client.get_regulars.side_effect = requests.ConnectionError("offline")
+    assert regulars_for_show(client, 5, "NewsRadio", config) == ["WNYX", "Max", "Dave"]

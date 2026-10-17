@@ -53,7 +53,8 @@ def fetch_tmdb_episodes(client: TmdbClient, tmdb_id: int, seasons: Optional[list
 def fetch_wikitext(page: str) -> str:
     r = requests.get(
         WIKI_API,
-        params={"action": "parse", "page": page, "prop": "wikitext", "format": "json", "formatversion": "2"},
+        params={"action": "parse", "page": page, "prop": "wikitext", "format": "json",
+                "formatversion": "2", "redirects": 1},
         headers=WIKI_HEADERS,
         timeout=30,
     )
@@ -103,14 +104,16 @@ def parse_episode_list(text: str) -> list[dict]:
 
 def wikipedia_episodes(show_name: str, seasons: list[int],
                        fetch: Callable[[str], str] = fetch_wikitext) -> list[dict]:
-    """The show's list page if it has one, else its season pages. Raises if Wikipedia fails."""
+    """The show's list page, plus "<Show> season N" pages for any season the list page does
+    not cover (some list pages only link out to season pages). Raises if Wikipedia fails."""
     try:
         eps = parse_episode_list(fetch(f"List of {show_name} episodes"))
     except LookupError:
         eps = []
-    if eps:
-        return eps
+    covered = {e["season"] for e in eps if e.get("title")}
     for s in seasons:
+        if s in covered:
+            continue
         try:
             got = parse_episode_list(fetch(f"{show_name} season {s}"))
         except LookupError:
@@ -124,25 +127,42 @@ def wikipedia_episodes(show_name: str, seasons: list[int],
 def attach_wiki_summaries(episodes: list[Episode], wiki: list[dict]) -> int:
     """Set wiki_summary on each episode whose title Wikipedia also has. Returns how many matched.
 
-    Matched by normalised title, preferring the same season when a title repeats, then by
-    difflib at TITLE_CUTOFF for small spelling differences. Numbering stays TMDB's.
+    First by normalised title, preferring the same season when a title repeats. Then, for
+    the episodes still without one, by difflib at TITLE_CUTOFF against the Wikipedia entries
+    no exact match claimed, for small spelling differences ("Shrink" and "The Shrink").
+    Numbering stays TMDB's.
     """
-    by_title: dict[str, list[dict]] = {}
-    for w in wiki:
-        if w.get("title"):
-            by_title.setdefault(norm(w["title"]), []).append(w)
-    keys = list(by_title)
+    entries = [w for w in wiki if w.get("title")]
+    claimed: set[int] = set()
+    pending = []
     hits = 0
+
+    def pick(ep: Episode, options: list[int]) -> int:
+        same = [k for k in options if entries[k].get("season") == ep.season]
+        return (same or options)[0]
+
     for ep in episodes:
         key = norm(ep.title)
-        if key not in by_title:
-            close = difflib.get_close_matches(key, keys, n=1, cutoff=TITLE_CUTOFF)
-            if not close:
-                continue
-            key = close[0]
-        options = by_title[key]
-        same = [w for w in options if w.get("season") == ep.season]
-        ep.wiki_summary = (same or options)[0].get("summary", "")
+        options = [k for k, w in enumerate(entries) if norm(w["title"]) == key and k not in claimed]
+        if not options:
+            pending.append(ep)
+            continue
+        k = pick(ep, options)
+        claimed.add(k)
+        ep.wiki_summary = entries[k].get("summary", "")
+        hits += 1
+
+    for ep in pending:
+        free = {}
+        for k, w in enumerate(entries):
+            if k not in claimed:
+                free.setdefault(norm(w["title"]), []).append(k)
+        close = difflib.get_close_matches(norm(ep.title), list(free), n=1, cutoff=TITLE_CUTOFF)
+        if not close:
+            continue
+        k = pick(ep, free[close[0]])
+        claimed.add(k)
+        ep.wiki_summary = entries[k].get("summary", "")
         hits += 1
     return hits
 
@@ -160,3 +180,19 @@ def build_episodes(client: TmdbClient, tmdb_id: int, show_name: Optional[str] = 
         except Exception as exc:  # Wikipedia is optional; never let it stop a run
             log.warning("Wikipedia lookup failed, using TMDB overviews only: %s", exc)
     return episodes
+
+
+def regulars_for_show(client: TmdbClient, tmdb_id: int, show_name: str, config=None) -> list[str]:
+    """The show's regular character names from TMDB, plus any listed for it in the config
+    key regulars_extra ({"NewsRadio": ["WNYX", "Max"]}, show name matched ignoring case).
+    A TMDB failure leaves just the extras."""
+    try:
+        names = list(client.get_regulars(tmdb_id))
+    except Exception as exc:
+        log.warning("could not fetch regular cast names: %s", exc)
+        names = []
+    extra = (config.get("regulars_extra") if config is not None else None) or {}
+    for show, words in extra.items():
+        if show.casefold() == show_name.casefold():
+            names += [w for w in words if w]
+    return list(dict.fromkeys(names))

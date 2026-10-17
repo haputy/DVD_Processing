@@ -4,6 +4,7 @@ from typing import Optional
 import requests
 
 BASE = "https://api.themoviedb.org/3"
+TIMEOUT = 30  # seconds
 
 
 @dataclass
@@ -39,7 +40,7 @@ class TmdbClient:
         self._key = api_key
 
     def _get(self, path: str, **params) -> dict:
-        r = requests.get(f"{BASE}{path}", params={"api_key": self._key, **params})
+        r = requests.get(f"{BASE}{path}", params={"api_key": self._key, **params}, timeout=TIMEOUT)
         r.raise_for_status()
         return r.json()
 
@@ -82,7 +83,8 @@ class TmdbClient:
         )
 
     def get_regulars(self, tmdb_id: int, min_share: float = 0.25) -> list[str]:
-        """First names of the main cast's characters, for the matcher's stop list.
+        """Names (first names and surnames) of the main cast's characters, for the matcher's
+        stop list.
 
         Uses aggregate_credits (every season), keeping cast in at least min_share of the
         show's episodes so guest stars stay in; falls back to /credits (the current main cast).
@@ -96,26 +98,30 @@ class TmdbClient:
                 if total and (c.get("total_episode_count") or 0) < min_share * total:
                     continue
                 for role in c.get("roles", []):
-                    names += _first_names(role.get("character", ""))
+                    names += character_names(role.get("character", ""))
         except requests.RequestException:
             data = self._get(f"/tv/{tmdb_id}/credits")
             for c in data.get("cast", []):
-                names += _first_names(c.get("character", ""))
+                names += character_names(c.get("character", ""))
         seen: dict[str, None] = {}
         for n in names:
             seen.setdefault(n, None)
         return list(seen)
 
 
-def _first_names(character: str) -> list[str]:
-    """'Dave Nelson / Narrator (voice)' -> ['Dave']."""
+def character_names(character: str) -> list[str]:
+    """Every name word of a credited character: 'Dr. Lisa Miller / Narrator (voice)' ->
+    ['Lisa', 'Miller']. Titles, nicknames in quotes and parenthesised notes are dropped."""
     out = []
     for part in re.split(r"\s*/\s*|\s*,\s*", character):
-        part = re.sub(r"\(.*?\)", "", part).strip().strip('"')
+        part = re.sub(r"\(.*?\)|\"[^\"]*\"", "", part).strip()
         part = re.sub(r"^(Dr|Mr|Mrs|Ms|Miss)\.?\s+", "", part)
         if not part or part.lower() in _NOT_CHARACTERS:
             continue
-        first = part.split()[0]
-        if first.lower() not in _NOT_CHARACTERS and re.match(r"[A-Za-z]", first):
-            out.append(first)
+        for word in part.split():
+            word = word.strip(".'\"")
+            if word.lower() in _NOT_CHARACTERS or word.lower() in {"jr", "sr", "ii", "iii"}:
+                continue
+            if re.match(r"[A-Za-z]", word):
+                out.append(word)
     return out
