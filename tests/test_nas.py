@@ -22,7 +22,7 @@ def test_default_root_and_config_override():
 def test_episode_dest_matches_nas_naming():
     assert episode_dest("NewsRadio", "1995", 1, 1) == \
         "//DXP2800-4CC5/Jellyfin/TVShows/NewsRadio (1995)/Season 1/NewsRadio S01 E01.mp4"
-    assert episode_dest("Show", "2003", 3, 12, root="X:/TV") == "X:/TV/Show (2003)/Season 3/Show S03 E12.mp4"
+    assert episode_dest("Show", "2003", 3, 12, root="X:/TV", allow_drive=True) == "X:/TV/Show (2003)/Season 3/Show S03 E12.mp4"
 
 
 def test_unsafe_characters_removed_from_show_names():
@@ -151,3 +151,125 @@ def test_resume_never_overwrites(tmp_path, log):
     report = resume_renaming([(_p(d, 1), _p(d, 2))])
     assert report.left_as_temp == [_p(d, 1) + ".renaming"]
     assert (d / "Show S01 E02.mp4").read_text() == "content of 2"
+
+
+# ---- review fixes ----------------------------------------------------------------------------
+
+def test_root_guard_refuses_lost_backslash_roots():
+    from dvd_processor.nas import RootError, check_root
+    for bad in ["/DXP2800-4CC5/Jellyfin/TVShows", r"\DXP2800-4CC5\Jellyfin\TVShows",
+                "DXP2800-4CC5/Jellyfin", "///x/y", "//server", ""]:
+        with pytest.raises(RootError):
+            check_root(bad)
+        with pytest.raises(RootError):
+            episode_dest("Show", "2000", 1, 1, root=bad or "/")
+    with pytest.raises(RootError):
+        nas_tv_root({"nas_tv_root": "/DXP2800-4CC5/Jellyfin/TVShows"})
+    assert check_root(r"\\NAS\TV") == "//NAS/TV"
+
+
+def test_drive_root_only_when_chosen_on_purpose():
+    from dvd_processor.nas import RootError
+    with pytest.raises(RootError):
+        episode_dest("Show", "2000", 1, 1, root="D:/TV")
+    assert episode_dest("Show", "2000", 1, 1, root=r"D:\TV", allow_drive=True) == \
+        "D:/TV/Show (2000)/Season 1/Show S01 E01.mp4"
+    assert nas_tv_root({"nas_tv_root": "D:\\TV\\"}) == "D:/TV"
+
+
+def test_copy_failure_removes_part(tmp_path, log, monkeypatch):
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"abc")
+    dest = tmp_path / "out" / "dest.mp4"
+
+    def broken_copy(a, b):
+        open(b, "wb").write(b"a")
+        raise OSError("network dropped")
+
+    monkeypatch.setattr(nas.shutil, "copy2", broken_copy)
+    with pytest.raises(OSError):
+        copy_episode(src, dest)
+    assert list((tmp_path / "out").iterdir()) == []
+
+
+def test_rename_saves_plan_json(tmp_path, log):
+    import json
+    d = _season(tmp_path, [5, 6])
+    report = rename_plan_apply([(_p(d, 5), _p(d, 6)), (_p(d, 6), _p(d, 5))])
+    assert report.plan_path.parent == log.parent
+    assert report.plan_path.name.startswith("rename-") and report.plan_path.suffix == ".json"
+    data = json.loads(report.plan_path.read_text(encoding="utf-8"))
+    assert data["phase"] == "done"
+    assert data["moves"][0] == {"source": _p(d, 5), "dest": _p(d, 6)}
+    assert nas.unfinished_rename_plans() == []
+
+
+def test_swap_stopped_in_pass1_resumes_from_plan_file(tmp_path, log, monkeypatch):
+    d = _season(tmp_path, [5, 6])
+    moves = [(_p(d, 5), _p(d, 6)), (_p(d, 6), _p(d, 5))]
+    real_rename = os.rename
+    calls = {"n": 0}
+
+    def stop_second(a, b):
+        calls["n"] += 1
+        if calls["n"] == 2:  # E05 went to its temp, E06 not yet
+            raise OSError("network name no longer available")
+        real_rename(a, b)
+
+    monkeypatch.setattr(nas.os, "rename", stop_second)
+    with pytest.raises(OSError):
+        rename_plan_apply(moves)
+    monkeypatch.setattr(nas.os, "rename", real_rename)
+    assert sorted(p.name for p in d.iterdir()) == ["Show S01 E05.mp4.renaming", "Show S01 E06.mp4"]
+
+    [plan] = nas.unfinished_rename_plans()
+    report = resume_renaming(plan)
+    assert (d / "Show S01 E06.mp4").read_text() == "content of 5"
+    assert (d / "Show S01 E05.mp4").read_text() == "content of 6"
+    assert sorted(p.name for p in d.iterdir()) == ["Show S01 E05.mp4", "Show S01 E06.mp4"]
+    assert len(report.renamed) == 2
+    assert nas.unfinished_rename_plans() == []
+    # Resuming a finished plan does nothing, so it can never swap the files back
+    assert resume_renaming(plan).renamed == []
+    assert (d / "Show S01 E06.mp4").read_text() == "content of 5"
+
+
+def test_swap_stopped_in_pass1_resumes_from_move_list(tmp_path, log, monkeypatch):
+    d = _season(tmp_path, [5, 6])
+    moves = [(_p(d, 5), _p(d, 6)), (_p(d, 6), _p(d, 5))]
+    real_rename = os.rename
+    calls = {"n": 0}
+
+    def stop_second(a, b):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("dropped")
+        real_rename(a, b)
+
+    monkeypatch.setattr(nas.os, "rename", stop_second)
+    with pytest.raises(OSError):
+        rename_plan_apply(moves)
+    monkeypatch.setattr(nas.os, "rename", real_rename)
+    resume_renaming(moves)  # finds the saved plan by its moves
+    assert (d / "Show S01 E06.mp4").read_text() == "content of 5"
+    assert (d / "Show S01 E05.mp4").read_text() == "content of 6"
+
+
+def test_case_only_rename_happens(tmp_path, log):
+    d = tmp_path / "Season 1"
+    d.mkdir()
+    (d / "show S01 E01.mp4").write_text("one")
+    src = (d / "show S01 E01.mp4").as_posix()
+    dst = (d / "Show S01 E01.mp4").as_posix()
+    report = rename_plan_apply([(src, dst)])
+    assert len(report.renamed) == 1
+    assert [p.name for p in d.iterdir()] == ["Show S01 E01.mp4"]
+    # Already right with matching case: skipped
+    assert rename_plan_apply([(dst, dst.replace("/", "\\"))]).already_right
+
+
+def test_case_variant_destination_counts_as_occupied(tmp_path, log):
+    d = _season(tmp_path, [1, 2])
+    # E02 -> "show s01 e01.mp4" lands on E01 (case-insensitively), which is not moving
+    with pytest.raises(RenameError):
+        rename_plan_apply([(_p(d, 2), (d / "show s01 e01.mp4").as_posix())])
