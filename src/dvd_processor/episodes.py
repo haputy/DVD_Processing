@@ -1,0 +1,162 @@
+"""A show's episodes, numbered by TMDB, with Wikipedia summaries attached when there are any.
+
+Jellyfin labels files by TMDB, so numbering always comes from TMDB. Wikipedia's "List of
+<Show> episodes" page (or its "<Show> season N" pages) usually has a much fuller summary than
+TMDB's overview, which gives the transcript matcher more plot words to work with. Wikipedia
+is a bonus: if it fails or has nothing, the TMDB episodes are returned as they are.
+"""
+import difflib
+import logging
+import re
+from dataclasses import dataclass
+from typing import Callable, Optional
+
+import requests
+
+from dvd_processor.tmdb import TmdbClient
+
+log = logging.getLogger(__name__)
+
+WIKI_API = "https://en.wikipedia.org/w/api.php"
+WIKI_HEADERS = {"User-Agent": "dvd-processor/0.1 (andy@planetkrouton.com)"}
+TITLE_CUTOFF = 0.8  # difflib ratio for "Shrink" and "The Shrink"
+
+
+@dataclass
+class Episode:
+    season: int
+    number: int
+    title: str
+    overview: str = ""
+    wiki_summary: str = ""
+
+
+def norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+# ---- TMDB ----------------------------------------------------------------------------------
+
+def fetch_tmdb_episodes(client: TmdbClient, tmdb_id: int, seasons: Optional[list[int]] = None) -> list[Episode]:
+    """Every episode of every season (specials left out), in TMDB's order."""
+    if seasons is None:
+        seasons = client.get_show(tmdb_id).seasons
+    out = []
+    for s in seasons:
+        for e in client.get_season_episodes(tmdb_id, s):
+            out.append(Episode(season=s, number=e.number, title=e.title, overview=e.overview))
+    return out
+
+
+# ---- Wikipedia -----------------------------------------------------------------------------
+
+def fetch_wikitext(page: str) -> str:
+    r = requests.get(
+        WIKI_API,
+        params={"action": "parse", "page": page, "prop": "wikitext", "format": "json", "formatversion": "2"},
+        headers=WIKI_HEADERS,
+        timeout=30,
+    )
+    r.raise_for_status()
+    data = r.json()
+    if "parse" not in data:
+        raise LookupError(f"no Wikipedia page {page!r}")
+    return data["parse"]["wikitext"]
+
+
+def clean(s: str) -> str:
+    s = re.sub(r"<ref[^>]*/>|<ref[^>]*>.*?</ref>", "", s, flags=re.S)
+    s = re.sub(r"<br\s*/?>", " ", s)
+    s = re.sub(r"\{\{[^{}]*\}\}", "", s)
+    s = re.sub(r"\[\[(?:[^|\]]*\|)?([^\]]*)\]\]", r"\1", s)
+    s = re.sub(r"'{2,}", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _field(block: str, name: str) -> str:
+    m = re.search(r"\|\s*" + name + r"\s*=(.*?)(?=\n\s*\|\s*\w+\s*=|\n\}\})", block, re.S)
+    return m.group(1).strip() if m else ""
+
+
+def parse_episode_list(text: str) -> list[dict]:
+    """Each {{Episode list}} block as {season, episode, title, summary}.
+
+    Seasons come from the "Season N" section headings above the blocks.
+    """
+    eps, season = [], 0
+    for m in re.finditer(r"^=+\s*(.*?)\s*=+\s*$|\{\{Episode list.*?\n\}\}", text, re.M | re.S):
+        if m.group(1) is not None:
+            s = re.search(r"Season\s+(\d+)", m.group(1))
+            if s:
+                season = int(s.group(1))
+            continue
+        b = m.group(0)
+        n = re.search(r"EpisodeNumber2\s*=\s*(\d+)", b)
+        eps.append({
+            "season": season,
+            "episode": int(n.group(1)) if n else None,
+            "title": clean(_field(b, "Title")),
+            "summary": clean(_field(b, "ShortSummary")),
+        })
+    return eps
+
+
+def wikipedia_episodes(show_name: str, seasons: list[int],
+                       fetch: Callable[[str], str] = fetch_wikitext) -> list[dict]:
+    """The show's list page if it has one, else its season pages. Raises if Wikipedia fails."""
+    try:
+        eps = parse_episode_list(fetch(f"List of {show_name} episodes"))
+    except LookupError:
+        eps = []
+    if eps:
+        return eps
+    for s in seasons:
+        try:
+            got = parse_episode_list(fetch(f"{show_name} season {s}"))
+        except LookupError:
+            continue
+        for e in got:
+            e["season"] = s
+        eps += got
+    return eps
+
+
+def attach_wiki_summaries(episodes: list[Episode], wiki: list[dict]) -> int:
+    """Set wiki_summary on each episode whose title Wikipedia also has. Returns how many matched.
+
+    Matched by normalised title, preferring the same season when a title repeats, then by
+    difflib at TITLE_CUTOFF for small spelling differences. Numbering stays TMDB's.
+    """
+    by_title: dict[str, list[dict]] = {}
+    for w in wiki:
+        if w.get("title"):
+            by_title.setdefault(norm(w["title"]), []).append(w)
+    keys = list(by_title)
+    hits = 0
+    for ep in episodes:
+        key = norm(ep.title)
+        if key not in by_title:
+            close = difflib.get_close_matches(key, keys, n=1, cutoff=TITLE_CUTOFF)
+            if not close:
+                continue
+            key = close[0]
+        options = by_title[key]
+        same = [w for w in options if w.get("season") == ep.season]
+        ep.wiki_summary = (same or options)[0].get("summary", "")
+        hits += 1
+    return hits
+
+
+def build_episodes(client: TmdbClient, tmdb_id: int, show_name: Optional[str] = None,
+                   use_wikipedia: bool = True,
+                   fetch: Callable[[str], str] = fetch_wikitext) -> list[Episode]:
+    show = client.get_show(tmdb_id)
+    episodes = fetch_tmdb_episodes(client, tmdb_id, show.seasons)
+    if use_wikipedia:
+        try:
+            wiki = wikipedia_episodes(show_name or show.name, show.seasons, fetch=fetch)
+            n = attach_wiki_summaries(episodes, wiki)
+            log.info("Wikipedia summaries for %d of %d episodes", n, len(episodes))
+        except Exception as exc:  # Wikipedia is optional; never let it stop a run
+            log.warning("Wikipedia lookup failed, using TMDB overviews only: %s", exc)
+    return episodes
