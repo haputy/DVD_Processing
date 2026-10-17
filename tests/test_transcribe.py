@@ -165,3 +165,21 @@ def test_title_files_ignore_case_and_sort_naturally(tmp_path):
     assert len(got) == 3
     assert [transcribe.title_key(f).casefold() for f in got] == ["a1 t00", "a1 t9", "a1 t10"]
     assert transcribe.title_key(got[0]) in ("A1 T00", "A1 t00")
+
+
+def test_check_source_retranscribes_a_different_file_under_the_same_name(tmp_path):
+    from dvd_processor.transcribe import transcribe_files
+    season = tmp_path / "Season 1"
+    f = _touch(season / "Show S01 E01.mp4")
+    cache = tmp_path / "cache"
+    model = FakeModel()
+    transcribe_files([f], cache, str(season), get_duration=lambda p: 1300.0,
+                     model_getter=lambda: model, check_source=True)
+    assert (cache / "Show S01 E01.source.json").exists()
+    transcribe_files([f], cache, str(season), get_duration=lambda p: 1300.0,
+                     model_getter=lambda: model, check_source=True)
+    assert len(model.calls) == 1  # same file: cache used
+    f.write_text("a different episode now has this name")
+    transcribe_files([f], cache, str(season), get_duration=lambda p: 1300.0,
+                     model_getter=lambda: model, check_source=True)
+    assert len(model.calls) == 2

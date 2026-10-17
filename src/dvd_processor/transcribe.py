@@ -9,6 +9,7 @@ the MP4-style name ("A1 T00") whether the MKV or the MP4 was used, so a rerun on
 is missing. Needs the "transcribe" extra.
 """
 import glob
+import json
 import logging
 import os
 import site
@@ -141,6 +142,30 @@ def cached_transcript(disc: Path, path: Path) -> Optional[Path]:
     return _cached(Path(disc) / TRANSCRIPTS_DIR, path)
 
 
+def source_stamp(path: Path) -> dict:
+    """What identifies a video file for the cache: its name, size and modification time."""
+    st = Path(path).stat()
+    return {"name": Path(path).name, "size": st.st_size, "mtime": int(st.st_mtime)}
+
+
+def sidecar_path(txt: Path) -> Path:
+    return Path(txt).with_name(Path(txt).stem + ".source.json")
+
+
+def _stamp_matches(txt: Path, path: Path) -> bool:
+    try:
+        return json.loads(sidecar_path(txt).read_text(encoding="utf-8")) == source_stamp(path)
+    except (OSError, ValueError):
+        return False
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
 def transcribe_file(path: Path, model=None) -> str:
     model = model if model is not None else get_model()
     segments, _ = model.transcribe(str(path), vad_filter=True, beam_size=1)
@@ -150,9 +175,15 @@ def transcribe_file(path: Path, model=None) -> str:
 def transcribe_files(files: list[Path], cache_dir: Path, disc: str,
                      get_duration: Callable[[Path], float] = duration,
                      model_getter: Callable[[], object] = get_model,
-                     progress: Optional[Callable[[str], None]] = None) -> list[TitleTranscript]:
+                     progress: Optional[Callable[[str], None]] = None,
+                     check_source: bool = False) -> list[TitleTranscript]:
     """Transcribe what is missing among files, caching <cache_dir>/<title key>.txt, and
     return a TitleTranscript for each, in the order given, labelled with disc.
+
+    With check_source (for files whose names change, like those on the NAS), each transcript
+    has a <key>.source.json sidecar with the file's name, size and modification time, and a
+    cached transcript is only used when they still match, so a different file that now has
+    the name is transcribed again.
 
     Titles under MIN_TRANSCRIBE_SECONDS come back with empty text; a title whose duration
     cannot be read (0) is transcribed anyway. The model is only loaded when something needs
@@ -169,6 +200,8 @@ def transcribe_files(files: list[Path], cache_dir: Path, disc: str,
             seconds = 0.0
         key = title_key(f)
         cached = _cached(cache_dir, f)
+        if cached is not None and check_source and not _stamp_matches(cached, f):
+            cached = None
         text = ""
         if cached is not None:
             text = cached.read_text(encoding="utf-8")
@@ -177,10 +210,9 @@ def transcribe_files(files: list[Path], cache_dir: Path, disc: str,
                 progress(f"transcribing {Path(disc).name}/{key} ({seconds / 60:.1f} min)")
             text = transcribe_file(f, model_getter())
             txt = cache_dir / f"{key}.txt"
-            txt.parent.mkdir(parents=True, exist_ok=True)
-            tmp = txt.with_suffix(".txt.part")
-            tmp.write_text(text, encoding="utf-8")
-            tmp.replace(txt)
+            _write_text(txt, text)
+            if check_source:
+                _write_text(sidecar_path(txt), json.dumps(source_stamp(f)))
         out.append(TitleTranscript(str(disc), key, round(seconds, 1), text, str(f)))
     return out
 
