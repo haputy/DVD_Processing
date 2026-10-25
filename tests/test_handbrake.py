@@ -138,3 +138,37 @@ def test_failed_cleanup_does_not_hide_the_real_error(tmp_path, monkeypatch):
     with patch.object(handbrake.subprocess, "run", side_effect=fail):
         with pytest.raises(KeyboardInterrupt):
             HandBrakeEncoder("hb").encode_all(tmp_path)
+
+
+def test_crash_retries_with_subtitles_as_their_own_track(tmp_path):
+    (tmp_path / "A1_t00.mkv").write_text("rip")
+    calls = []
+
+    def run(cmd, check):
+        calls.append(cmd)
+        out = Path(cmd[cmd.index("--output") + 1])
+        out.write_text("partial" if len(calls) == 1 else "encoded")
+        if len(calls) == 1:
+            raise handbrake.subprocess.CalledProcessError(3221225477, cmd)
+
+    with patch.object(handbrake.subprocess, "run", side_effect=run):
+        HandBrakeEncoder("hb").encode_all(tmp_path)
+    assert "--subtitle-burned=none" not in calls[0]
+    assert calls[1] == calls[0] + ["--subtitle-burned=none"]
+    assert (tmp_path / "MP4" / "A1 T00.mp4").read_text() == "encoded"
+    assert [p.name for p in (tmp_path / "MP4").iterdir()] == ["A1 T00.mp4"]
+
+
+def test_other_failures_are_not_retried(tmp_path):
+    (tmp_path / "A1_t00.mkv").write_text("rip")
+    calls = []
+
+    def run(cmd, check):
+        calls.append(cmd)
+        raise handbrake.subprocess.CalledProcessError(2, cmd)
+
+    with patch.object(handbrake.subprocess, "run", side_effect=run):
+        with pytest.raises(handbrake.subprocess.CalledProcessError):
+            HandBrakeEncoder("hb").encode_all(tmp_path)
+    assert len(calls) == 1
+    assert list((tmp_path / "MP4").iterdir()) == []

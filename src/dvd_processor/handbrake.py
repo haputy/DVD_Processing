@@ -13,6 +13,11 @@ from typing import Optional
 
 DEFAULT_PRESET = "Fast 1080p30"
 HANDBRAKE_VERSION = "1.9.2"
+# 0xC0000005, a Windows access violation. HandBrakeCLI 1.9.2 dies this way burning some DVDs'
+# forced VOBSUB subtitles into the picture (Big Fish, 25 October 2026), so such an encode is
+# tried once more with the subtitles kept as their own track instead.
+ACCESS_VIOLATION = (3221225477, -1073741819)
+SOFT_SUBTITLES = ["--subtitle-burned=none"]
 
 
 def default_handbrake_path() -> str:
@@ -113,17 +118,20 @@ class HandBrakeEncoder:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = output_path.with_name(output_path.stem + ".encoding" + output_path.suffix)
+        cmd = [
+            self.handbrake_path,
+            "--input", str(input_path),
+            "--output", str(tmp),
+            "--preset", self.preset,
+        ]
+        run = self.runner or subprocess.run
         try:
-            (self.runner or subprocess.run)(
-                [
-                    self.handbrake_path,
-                    "--input", str(input_path),
-                    "--output", str(tmp),
-                    "--preset", self.preset,
-                ],
-                check=True,
-                **self._quiet_kwargs(),
-            )
+            try:
+                run(cmd, check=True, **self._quiet_kwargs())
+            except subprocess.CalledProcessError as e:
+                if e.returncode not in ACCESS_VIOLATION:
+                    raise
+                run(cmd + SOFT_SUBTITLES, check=True, **self._quiet_kwargs())
             tmp.replace(output_path)
         except BaseException:
             try:
