@@ -15,6 +15,13 @@ class TmdbShow:
 
 
 @dataclass
+class TmdbMovie:
+    tmdb_id: int
+    name: str
+    year: str
+
+
+@dataclass
 class TmdbEpisode:
     number: int
     title: str
@@ -51,6 +58,17 @@ class TmdbClient:
                 tmdb_id=r["id"],
                 name=r["name"],
                 year=r.get("first_air_date", "")[:4],
+            )
+            for r in data.get("results", [])
+        ]
+
+    def search_movie(self, name: str) -> list[TmdbMovie]:
+        data = self._get("/search/movie", query=name)
+        return [
+            TmdbMovie(
+                tmdb_id=r["id"],
+                name=r.get("title") or r.get("original_title") or "",
+                year=(r.get("release_date") or "")[:4],
             )
             for r in data.get("results", [])
         ]

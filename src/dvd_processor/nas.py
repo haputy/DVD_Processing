@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 DEFAULT_NAS_TV_ROOT = "//DXP2800-4CC5/Jellyfin/TVShows"
+DEFAULT_NAS_MOVIE_ROOT = "//DXP2800-4CC5/Jellyfin/Movies"
 UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 PART = ".part"
 RENAMING = ".renaming"
@@ -57,6 +58,26 @@ def nas_tv_root(config=None) -> str:
     """Config nas_tv_root, else the default. A drive path in config counts as set on purpose."""
     root = config.get("nas_tv_root") if config is not None else None
     return check_root(root or DEFAULT_NAS_TV_ROOT, allow_drive=bool(root))
+
+
+def nas_movie_root(config=None) -> str:
+    """Config nas_movie_root, else the default. A drive path in config counts as set on purpose."""
+    root = config.get("nas_movie_root") if config is not None else None
+    return check_root(root or DEFAULT_NAS_MOVIE_ROOT, allow_drive=bool(root))
+
+
+def movie_folder(title: str, year: Optional[str] = None) -> str:
+    """'Brazil (1985)': the folder and file name Jellyfin's Movies library already uses."""
+    s = safe_name(title)
+    return f"{s} ({year})" if year else s
+
+
+def movie_dest(title: str, year: Optional[str], ext: str = ".mp4", root: Optional[str] = None,
+               allow_drive: bool = False) -> str:
+    """<root>/<Title (Year)>/<Title (Year)>.mp4."""
+    root = check_root(root or DEFAULT_NAS_MOVIE_ROOT, allow_drive=allow_drive)
+    name = movie_folder(title, year)
+    return f"{root}/{name}/{name}{ext}"
 
 
 def safe_name(name: str) -> str:

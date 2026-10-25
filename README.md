@@ -46,13 +46,26 @@ If a rename on the NAS is interrupted, `dvd-process resume` finishes it.
 ## The window
 
 `python -m dvd_processor gui` (or `launch.bat`, or the Desktop shortcut that
-`make_shortcut.ps1` makes) opens "DVD to Jellyfin", which does the same as the commands:
+`make_shortcut.ps1` makes) opens "DVD to Jellyfin":
 
-- Type the show at the top and click Find, then check the dropdown picked the right one
-  (it shows the year and TMDB id). Season is optional. The drive with a disc in it is picked.
-- **Rip disc**: Scan disc lists the titles and which will be ripped (play-alls and extras are
-  skipped). "Rip, encode and transcribe" does the rest and ejects the disc. Repeat per disc.
-- **Match and copy**: Match fills the table. Yellow rows are CHECK and start unticked; click
+- Type the show at the top and press Enter or Find, then check the dropdown picked the right
+  one (it shows the year and TMDB id). Season is optional but makes the match surer. The
+  drive with a disc in it is picked.
+- **Disc to NAS**: put a disc in and press **Go**. It rips every episode-length title (play-alls
+  and extras are skipped), ejects the disc, encodes, transcribes, matches this disc's titles
+  against the episodes not yet on the NAS, and copies them, with no questions. It copies
+  nothing and stops for review when a match is flagged CHECK, two titles get one episode, or
+  there are more titles than episodes; the table opens on Match and copy. Press Go again
+  with the same disc to carry on after a stop or an error: a finished rip is not redone, an
+  unfinished one is ripped again into a new folder, and nothing on the NAS is overwritten.
+- **Movies**: switch the top bar from TV to Movie, find the film (the year tells remakes apart)
+  and press Go. It rips the main feature only, encodes it and copies it to
+  `//DXP2800-4CC5/Jellyfin/Movies/Title (Year)/Title (Year).mp4` (config `nas_movie_root`). A
+  film whose folder already holds a video is never copied again. A disc with two titles about
+  as long as the film (two cuts, or decoy titles) rips nothing and asks you to click the one to
+  rip in the table, then Go again.
+- **Match and copy**: where Go's stops are reviewed; Match also matches every disc of the show
+  at once. Match fills the table. Yellow rows are CHECK and start unticked; click
   an episode to change it (the row becomes FIXED and ticked). Copy to NAS stays disabled
   while two ticked rows share an episode.
 - **Fix a show on the NAS**: pick the show's folder, Match, then Rename the ticked rows. An

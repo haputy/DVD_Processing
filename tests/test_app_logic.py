@@ -330,7 +330,7 @@ def test_auto_pick_follows_the_cli_yes_rule():
     assert al.auto_pick([al.Show(5, "NewsRadio Live", "")], "NewsRadio") is None  # not exact
     assert al.auto_pick([al.Show(5, "Other", ""), SHOW], "NewsRadio") is None     # exact but not first
     assert al.auto_pick([], "x") is None
-    assert al.pick_prompt(2) == "(pick one of 2 shows)" and al.pick_prompt(1) == "(pick the show)"
+    assert al.pick_prompt(2) == "(pick one of 2)" and al.pick_prompt(1) == "(pick it from the list)"
 
 
 def test_folder_matches_show():
@@ -432,7 +432,7 @@ def test_a_stop_between_titles_is_handled_like_one_mid_title(tmp_path, tmp_confi
     with pytest.raises(Cancelled) as e:
         al.run_rip(plan, FakeScanner(), FakeEncoder(), None, SHOW, None, progress=progress)
     msg = str(e.value)
-    assert "Finished titles: [0, 1]" in msg and "Rip again" in msg and "marked incomplete" in msg
+    assert "Finished titles: [0, 1]" in msg and "Go again" in msg and "marked incomplete" in msg
     assert not read_disc_info(tmp_path / "D1").complete
     assert sorted(p.name for p in (tmp_path / "D1").glob("*.mkv")) == ["A1_t00.mkv", "A1_t01.mkv"]
 
@@ -499,3 +499,365 @@ def test_copying_an_mkv_is_said_first():
     note = al.mkv_note([mp4, mkv])
     assert "1 of these is an MKV rip" in note and "A1_t01.mkv" in note
     assert note in al.copy_confirm_text([mp4, mkv], "//nas/TV", [])
+
+
+# ---- Go: one disc from the drive to the NAS ------------------------------------------------
+
+class GoScanner(FakeScanner):
+    def __init__(self, titles=None, label="NEWSRADIO_S3D1", fail_on=None):
+        super().__init__(fail_on)
+        self.titles, self.label, self.ripped = _scan() if titles is None else titles, label, []
+
+    def scan_with_label(self):
+        return self.titles, self.label
+
+    def rip(self, indices, folder):
+        self.ripped += indices
+        super().rip(indices, folder)
+
+
+class SizedEncoder(FakeEncoder):
+    """MP4s of different sizes per title, and different bytes per disc, as real encodes are."""
+
+    def encode(self, src, out):
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tag = src.parent.name.encode()  # discs differ in content even where sizes agree
+        out.write_bytes(tag + b"x" * (1000 + int(src.stem[-2:]) - len(tag)))
+        self.done.append(src.name)
+
+
+def go_transcriber(folder, progress=None):
+    return [TitleTranscript(str(folder), p.stem, 1320, "words", str(p))
+            for p in sorted((Path(folder) / "MP4").glob("*.mp4"))]
+
+
+def go_matcher(flags=None, picks=None):
+    """In-order matches; flags[i] flags title i, picks[i] gives it episodes[picks[i]]."""
+    seen = {}
+
+    def matcher(titles, episodes, regulars):
+        seen["titles"], seen["episodes"] = [t.stem for t in titles], [(e.season, e.number) for e in episodes]
+        out = []
+        for i, t in enumerate(titles):
+            j = (picks or {}).get(i, i)
+            ep = episodes[j] if j < len(episodes) else None
+            out.append(TranscriptMatch(t, ep, 0.2, 0.05, (flags or {}).get(i, "") if ep else "CHECK"))
+        return out
+    matcher.seen = seen
+    return matcher
+
+
+def _go(tmp_path, scanner=None, matcher=None, season=3, episodes=EPS, ejected=None, said=None):
+    nas = tmp_path / "nas"
+    nas.mkdir(exist_ok=True)
+    return al.run_go(SHOW, season, scanner or GoScanner(), SizedEncoder(), go_transcriber,
+                     lambda s: (episodes, ["Dave"]), matcher or go_matcher(), tmp_path / "Video",
+                     nas.as_posix(), progress=(said.append if said is not None else al._quiet),
+                     eject=(lambda: ejected.append(1) or True) if ejected is not None else None)
+
+
+def _season3(tmp_path):
+    return tmp_path / "nas" / "NewsRadio (1995)" / "Season 3"
+
+
+def test_go_takes_a_clean_disc_all_the_way_to_the_nas(tmp_path, tmp_config_dir):
+    ejected, said = [], []
+    r = _go(tmp_path, ejected=ejected, said=said)
+    assert r.problem == "" and len(r.summary.copied) == 4 and not r.summary.failed
+    assert sorted(p.name for p in _season3(tmp_path).iterdir()) == [
+        "NewsRadio S03 E01.mp4", "NewsRadio S03 E02.mp4", "NewsRadio S03 E03.mp4", "NewsRadio S03 E04.mp4"]
+    assert read_disc_info(r.folder).complete and ejected == [1]
+    assert "4 copied, 0 already there, 0 failed." in al.go_text(r)
+    assert "Copying 4 of 4: NewsRadio S03 E04.mp4" in said
+
+
+def test_go_copies_nothing_when_a_match_is_check(tmp_path, tmp_config_dir):
+    r = _go(tmp_path, matcher=go_matcher(flags={2: "CHECK"}))
+    assert "flagged CHECK" in r.problem and r.summary is None
+    assert not (tmp_path / "nas" / "NewsRadio (1995)").exists()
+    # the review table: sure rows ticked, the CHECK row unticked for Andy to look at
+    assert [row.will_act for row in r.match.rows] == [True, True, False, True]
+    assert "stopped for review" in al.go_text(r)
+
+
+def test_go_copies_nothing_when_two_titles_get_one_episode(tmp_path, tmp_config_dir):
+    r = _go(tmp_path, matcher=go_matcher(picks={1: 0}))
+    assert "share an episode" in r.problem and r.summary is None
+    assert not (tmp_path / "nas" / "NewsRadio (1995)").exists()
+
+
+def test_go_copies_nothing_when_titles_outnumber_episodes(tmp_path, tmp_config_dir):
+    titles = [DiscTitle(i, 1320 + i) for i in range(8)]  # 8 titles, 5 episodes: over by more than 2
+    r = _go(tmp_path, scanner=GoScanner(titles), matcher=go_matcher(),
+            episodes=EPS + [Episode(3, 5, "Five")])
+    assert "more titles than episodes" in r.problem
+    assert not (tmp_path / "nas" / "NewsRadio (1995)").exists()
+
+
+def test_go_again_with_the_same_disc_rips_nothing_and_copies_nothing_twice(tmp_path, tmp_config_dir):
+    _go(tmp_path)
+    scanner, matcher = GoScanner(), go_matcher()
+    r = _go(tmp_path, scanner=scanner, matcher=matcher)
+    assert scanner.ripped == [] and matcher.seen == {}
+    assert r.match is None and len(r.on_nas) == 4
+    assert "Nothing left to copy" in al.go_text(r)
+    assert len(list(_season3(tmp_path).iterdir())) == 4
+
+
+def test_go_leaves_episodes_already_on_the_nas_out_of_the_match(tmp_path, tmp_config_dir):
+    other = tmp_path / "nas" / "NewsRadio (1995)" / "Season 03"
+    other.mkdir(parents=True)
+    (other / "NewsRadio S03E02.mp4").write_bytes(b"old")  # another naming, another size
+    titles = [DiscTitle(0, 1320), DiscTitle(1, 1325), DiscTitle(2, 1318)]
+    matcher = go_matcher()
+    r = _go(tmp_path, scanner=GoScanner(titles), matcher=matcher)
+    assert matcher.seen["episodes"] == [(3, 1), (3, 3), (3, 4)]
+    assert r.problem == "" and (other / "NewsRadio S03E02.mp4").read_bytes() == b"old"
+    assert sorted(p.name for p in _season3(tmp_path).iterdir()) == [
+        "NewsRadio S03 E01.mp4", "NewsRadio S03 E03.mp4", "NewsRadio S03 E04.mp4"]
+
+
+def test_go_never_overwrites_what_appeared_on_the_nas(tmp_path, tmp_config_dir, monkeypatch):
+    # an episode not seen by the NAS check (it arrived during the match) is still left alone
+    real = al.nas_show_state
+    monkeypatch.setattr(al, "nas_show_state", lambda show, root: (real(show, root), _season3(tmp_path).mkdir(
+        parents=True), (_season3(tmp_path) / "NewsRadio S03 E01.mp4").write_bytes(b"theirs"))[0])
+    r = _go(tmp_path)
+    assert len(r.summary.already_there) == 1 and len(r.summary.copied) == 3
+    assert (_season3(tmp_path) / "NewsRadio S03 E01.mp4").read_bytes() == b"theirs"
+
+
+def test_go_after_an_interrupted_rip_rips_again_into_a_new_folder(tmp_path, tmp_config_dir):
+    with pytest.raises(al.UserError):
+        _go(tmp_path, scanner=GoScanner(fail_on=2))
+    scanner = GoScanner()
+    r = _go(tmp_path, scanner=scanner)
+    assert scanner.ripped == [0, 1, 2, 3]
+    assert r.folder.name == "NEWSRADIO_S3D1_2" and len(r.summary.copied) == 4
+
+
+def test_go_after_the_nas_was_away_carries_on_without_ripping(tmp_path, tmp_config_dir):
+    nas = tmp_path / "nas"
+    with pytest.raises(al.UserError) as e:  # no NAS folder at all: unreachable
+        al.run_go(SHOW, 3, GoScanner(), SizedEncoder(), go_transcriber, lambda s: (EPS, []), go_matcher(),
+                  tmp_path / "Video", nas.as_posix())
+    assert "press Go again" in str(e.value)
+    scanner = GoScanner()
+    r = _go(tmp_path, scanner=scanner, season=None)  # the season comes from disc.json
+    assert scanner.ripped == [] and len(r.summary.copied) == 4
+    assert r.folder.name == "NEWSRADIO_S3D1"
+
+
+def test_go_with_a_disc_that_has_no_episodes(tmp_path, tmp_config_dir):
+    with pytest.raises(al.UserError):
+        _go(tmp_path, scanner=GoScanner([DiscTitle(0, 100)]))
+    with pytest.raises(al.UserError):
+        _go(tmp_path, scanner=GoScanner([]))
+
+
+def test_go_rip_only_rips_and_ejects_so_the_drive_is_free_sooner(tmp_path, tmp_config_dir):
+    said, ejected = [], []
+    ripped = al.go_rip(SHOW, 3, GoScanner(), tmp_path / "Video", progress=said.append,
+                       eject=lambda: ejected.append(1) or True)
+    assert ejected == [1] and al.EJECTED in said
+    assert read_disc_info(ripped.folder).complete
+    assert not (ripped.folder / "MP4").exists()  # encoding waits for go_finish
+
+
+def test_two_discs_ripped_back_to_back_finish_one_after_the_other(tmp_path, tmp_config_dir):
+    (tmp_path / "nas").mkdir()
+    eps = EPS + [Episode(3, 5, "Five"), Episode(3, 6, "Six")]
+    disc1 = al.go_rip(SHOW, 3, GoScanner([DiscTitle(0, 1320), DiscTitle(1, 1325), DiscTitle(2, 1318)], "D1"),
+                      tmp_path / "Video")
+    disc2 = al.go_rip(SHOW, 3, GoScanner([DiscTitle(0, 1321), DiscTitle(1, 1330), DiscTitle(2, 1319)], "D2"),
+                      tmp_path / "Video")
+    nas = (tmp_path / "nas").as_posix()
+
+    def finish(ripped, matcher):
+        return al.go_finish(ripped, SizedEncoder(), go_transcriber, lambda s: (eps, []), matcher, nas)
+    first, second = go_matcher(), go_matcher()
+    assert len(finish(disc1, first).summary.copied) == 3
+    assert len(finish(disc2, second).summary.copied) == 3
+    assert first.seen["episodes"] == [(3, n) for n in range(1, 7)]
+    assert second.seen["episodes"] == [(3, 4), (3, 5), (3, 6)]  # what disc 1 copied is out
+    assert len(list(_season3(tmp_path).iterdir())) == 6
+
+
+# ---- titles far off the disc's episode length ----------------------------------------------
+
+def _t(stem, minutes, disc="C:/Video/D1", text="words"):
+    return TitleTranscript(disc, stem, minutes * 60, text)
+
+
+def test_episode_length_is_the_largest_group_of_like_lengths():
+    # Northern Exposure season 2 disc 2: two episodes, a play-all, three featurettes
+    mins = [94.7, 47.2, 47.5, 14.5, 11.1, 15.5]
+    assert al.episode_length([m * 60 for m in mins]) == 47.5 * 60
+    assert al.episode_length([47 * 60]) is None            # nothing to compare with
+    assert al.episode_length([47 * 60, 5 * 60]) is None    # under 10 minutes does not count
+
+
+def test_titles_far_off_the_episode_length_are_extras_and_never_matched():
+    titles = [_t("B4 T02", 94.7), _t("C1 T00", 47.2), _t("D1 T01", 47.5), _t("E3 T05", 14.5),
+              _t("X", 5)]
+    seen = []
+
+    def matcher(ts, episodes, regulars):
+        seen.extend(t.stem for t in ts)
+        return [TranscriptMatch(t, episodes[i] if t.seconds >= 600 else None, 0.2, 0.05,
+                                "" if t.seconds >= 600 else "EXTRA") for i, t in enumerate(ts)]
+    rows = al.build_rows(al.match_by_length(titles, EPS, [], matcher))
+    assert seen == ["C1 T00", "D1 T01", "X"]
+    assert [r.match.title.stem for r in rows] == ["B4 T02", "C1 T00", "D1 T01", "E3 T05", "X"]
+    assert [r.match.flag for r in rows] == ["EXTRA", "", "", "EXTRA", "EXTRA"]
+    assert "much longer" in al.row_note(rows[0]) and "play-all" in al.row_note(rows[0])
+    assert "much shorter" in al.row_note(rows[3]) and "about 48 min" in al.row_note(rows[3])
+    assert al.row_note(rows[4]) == "under 10 minutes, probably an extra"
+    # an extra is copied only once its episode is picked by hand
+    assert al.set_include(rows, 4, True) is not None
+    al.set_episode(rows, 4, al.episode_label(EPS[3]), EPS)
+    assert rows[3].will_act
+
+
+def test_each_disc_is_judged_on_its_own_titles():
+    titles = [_t("A", 46, "D1"), _t("B", 46, "D1"), _t("C", 22, "D2"), _t("D", 23, "D2")]
+    assert al.length_flags(titles) == {}
+
+
+def test_go_never_copies_a_short_title_on_its_own(tmp_path, tmp_config_dir):
+    # disc 6 of Northern Exposure season 3: three episodes and a 12.8-minute extra
+    titles = [DiscTitle(0, 2742), DiscTitle(1, 2760), DiscTitle(2, 2738), DiscTitle(10, 768)]
+
+    def transcriber(folder, progress=None):
+        out = go_transcriber(folder)
+        for t, d in zip(out, sorted(titles, key=lambda d: d.index)):
+            t.seconds = d.duration_secs
+        return out
+    nas = tmp_path / "nas"
+    nas.mkdir()
+    r = al.run_go(SHOW, 3, GoScanner(titles), SizedEncoder(), transcriber, lambda s: (EPS, []), go_matcher(),
+                  tmp_path / "Video", nas.as_posix())
+    assert r.problem == "" and len(r.summary.copied) == 3
+    assert [row.match.flag for row in r.match.rows].count("EXTRA") == 1
+
+
+# ---- why a row was matched -----------------------------------------------------------------
+
+SLOW = Episode(2, 7, "Slow Dance", "A falling satellite hits Rick.",
+               "A satellite plunges out of orbit and crashes into Rick. Guest star Someone Famous")
+BIG_KISS = Episode(2, 2, "The Big Kiss", "Chris looks for his muse.", "Chris kisses a woman and loses his voice.")
+
+
+def test_shared_words_put_the_telling_ones_first_and_drop_the_regulars():
+    said = "The satellite fell. Rick was under the satellite. Maggie cried. Chris lost his voice."
+    words = al.shared_words(said, SLOW, [SLOW, BIG_KISS], regulars=["Maggie O'Connell", "Rick"])
+    assert words[0] == "satellite" and "rick" not in words and "maggie" not in words
+    assert al.shared_words(said, BIG_KISS, [SLOW, BIG_KISS], regulars=["Chris Stevens"]) == ["voice"]
+
+
+def test_dialogue_lines_pick_the_sentences_with_the_words_in_order():
+    said = "Hello there. The satellite came down. Nothing here. A satellite in orbit, imagine. Bye."
+    assert al.dialogue_lines(said, ["satellite", "orbit"], n=2) == [
+        "The satellite came down.", "A satellite in orbit, imagine."]
+    assert al.dialogue_lines(said, []) == []
+
+
+def test_row_detail_shows_both_descriptions_and_the_dialogue():
+    title = TitleTranscript("C:/Video/NE_11", "C1 T00", 2832, "Rick is gone. The satellite hit him. Dance with me.")
+    row = al.build_rows([TranscriptMatch(title, SLOW, 0.031, 0.008, "CHECK", "", BIG_KISS)])[0]
+    text = al.row_detail(row, [SLOW, BIG_KISS], regulars=["Rick"])
+    assert text.startswith("NE_11/C1 T00, 47.2 min. Score 0.031, margin 0.008. CHECK: close call")
+    assert "Picked: S02E07 Slow Dance" in text and "Runner-up: S02E02 The Big Kiss" in text
+    assert "TMDB: A falling satellite hits Rick." in text
+    assert "Wikipedia: A satellite plunges out of orbit" in text and "Someone Famous" not in text
+    assert "Words in common with the dialogue: dance, satellite" in text
+    assert '"The satellite hit him."' in text
+    # after a pick by hand the matcher's own pick is still shown
+    al.set_episode([row], 1, al.episode_label(BIG_KISS), [SLOW, BIG_KISS])
+    text = al.row_detail(row, [SLOW, BIG_KISS])
+    assert "Set by hand: S02E02 The Big Kiss" in text and "The matcher's pick: S02E07 Slow Dance" in text
+
+
+def test_row_detail_for_an_extra_quotes_the_start_of_the_dialogue():
+    row = al.build_rows([TranscriptMatch(_t("E3 T05", 14.5, text="This is Maurice. A crime wave."), None, 0, 0,
+                                         "EXTRA", "14.5 min, much shorter")])[0]
+    text = al.row_detail(row, [SLOW])
+    assert "EXTRA: 14.5 min, much shorter" in text and "From the dialogue (start): This is Maurice." in text
+
+
+# ---- movies --------------------------------------------------------------------------------
+
+BRAZIL = al.Show(68, "Brazil", "1985", kind=al.MOVIE)
+
+
+def _movie_disc():
+    # the film, a trailer, two featurettes
+    return [DiscTitle(0, 8520), DiscTitle(1, 150), DiscTitle(2, 1500), DiscTitle(3, 900)]
+
+
+def _movie_go(tmp_path, titles=None, pick=None, fingerprint=None, ejected=None):
+    scanner = GoScanner(titles or _movie_disc(), "BRAZIL")
+    ripped = al.go_rip_movie(BRAZIL, scanner, tmp_path / "Video", eject=(lambda: ejected.append(1) or True)
+                             if ejected is not None else None, pick=pick, pick_fingerprint=fingerprint)
+    return scanner, ripped
+
+
+def test_a_movie_rips_only_the_feature_and_lands_in_its_own_folder(tmp_path, tmp_config_dir):
+    ejected = []
+    scanner, ripped = _movie_go(tmp_path, ejected=ejected)
+    assert scanner.ripped == [0] and ejected == [1]
+    assert [r.rip for r in ripped.plan.rows] == [True, False, False, False]
+    info = read_disc_info(ripped.folder)
+    assert info.kind == "movie" and info.complete and info.tmdb_id == 68
+    movies = tmp_path / "Movies"
+    movies.mkdir()
+    r = al.go_finish_movie(ripped, SizedEncoder(), movies.as_posix())
+    assert r.status == "copied"
+    assert (movies / "Brazil (1985)" / "Brazil (1985).mp4").exists()
+    assert "copied to" in al.movie_text(r)
+
+
+def test_a_movie_already_in_the_library_is_never_copied_again(tmp_path, tmp_config_dir):
+    movies = tmp_path / "Movies"
+    (movies / "Brazil (1985)").mkdir(parents=True)
+    (movies / "Brazil (1985)" / "Brazil.1985.mkv").write_bytes(b"theirs")  # another name
+    _, ripped = _movie_go(tmp_path)
+    r = al.go_finish_movie(ripped, SizedEncoder(), movies.as_posix())
+    assert r.status == "exists" and "already in the Movies library" in al.movie_text(r)
+    assert sorted(p.name for p in (movies / "Brazil (1985)").iterdir()) == ["Brazil.1985.mkv"]
+
+
+def test_go_again_with_a_ripped_movie_does_not_rip_it_again(tmp_path, tmp_config_dir):
+    _, first = _movie_go(tmp_path)
+    scanner, again = _movie_go(tmp_path)
+    assert scanner.ripped == [] and again.folder == first.folder
+
+
+def test_two_cuts_of_the_film_wait_for_a_pick(tmp_path, tmp_config_dir):
+    titles = [DiscTitle(0, 8520), DiscTitle(1, 9420), DiscTitle(2, 900)]   # theatrical, director's cut
+    scanner, pick = _movie_go(tmp_path, titles)
+    assert isinstance(pick, al.MoviePick) and scanner.ripped == []
+    assert [t.index for t in pick.candidates] == [0, 1]
+    assert "pick one" in pick.plan.rows[0].why and "pick one" in pick.plan.rows[1].why
+    scanner, ripped = _movie_go(tmp_path, titles, pick=0, fingerprint=pick.plan.fingerprint)
+    assert scanner.ripped == [0] and isinstance(ripped, al.Ripped)
+
+
+def test_a_pick_from_another_disc_is_ignored(tmp_path, tmp_config_dir):
+    titles = [DiscTitle(0, 8520), DiscTitle(1, 9420)]
+    _, pick = _movie_go(tmp_path, titles, pick=1, fingerprint=[100, 200])
+    assert isinstance(pick, al.MoviePick)
+
+
+def test_a_movie_folder_is_never_a_disc_of_a_show_with_the_same_tmdb_id(tmp_path, tmp_config_dir):
+    write_disc_info(tmp_path / "MOVIE", "Something", 3968, kind="movie", titles=[t.duration_secs for t in _scan()])
+    plan = al.plan_rip(_scan(), "NEWSRADIO_S3D1", SHOW, tmp_path)   # NewsRadio is TMDB 3968 too
+    assert plan.already is None
+    from dvd_processor.discinfo import disc_folders_for_show
+    assert disc_folders_for_show("NewsRadio", 3968, tmp_path) == []
+
+
+def test_movie_destination_naming():
+    from dvd_processor.nas import movie_dest
+    assert movie_dest("Brazil", "1985") == "//DXP2800-4CC5/Jellyfin/Movies/Brazil (1985)/Brazil (1985).mp4"
+    assert movie_dest("Star Wars: A New Hope", "1977").endswith("/Star Wars A New Hope (1977).mp4")

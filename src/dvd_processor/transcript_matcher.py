@@ -49,6 +49,7 @@ class TranscriptMatch:
     margin: float      # combined score over the best other episode
     flag: str          # "" when confident, CHECK to review, EXTRA when too short to be an episode
     note: str = ""     # why a row is CHECK when it is not just a thin margin
+    runner_up: Optional[Episode] = None   # the best other episode, for the review's explanation
 
 
 def reference_text(ep: Episode) -> str:
@@ -129,6 +130,10 @@ def match_transcripts(titles: list[TitleTranscript], episodes: list[Episode],
             continue
         others = np.delete(score[r], j)
         best_other = float(np.max(others)) if others.size else 0.0
+        runner_up = None
+        if others.size:
+            k = int(np.argmax(others))
+            runner_up = episodes[k if k < j else k + 1]
         rank = int((score[r] > score[r, j]).sum()) + 1
         margin = float(score[r, j]) - best_other
         similarity = float(sim[r, j])
@@ -138,7 +143,7 @@ def match_transcripts(titles: list[TitleTranscript], episodes: list[Episode],
         elif rank != 1:
             note = "another episode scores higher"
         flag = "" if not note and margin > CONFIDENT_MARGIN else FLAG_CHECK
-        results[i] = TranscriptMatch(titles[i], episodes[j], similarity, margin, flag, note)
+        results[i] = TranscriptMatch(titles[i], episodes[j], similarity, margin, flag, note, runner_up)
     return results  # type: ignore[return-value]
 
 

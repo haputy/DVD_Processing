@@ -117,3 +117,14 @@ def test_partial_disc_set_is_matched_on_dialogue_alone():
               TitleTranscript("D1", "T01", 2700, "tundra wind, a long tundra walk, tundra")]
     got = [m.episode.number for m in match_transcripts(titles, eps)]
     assert got == [4, 5]
+
+
+def test_each_match_names_its_runner_up():
+    from dvd_processor.episodes import Episode
+    from dvd_processor.transcript_matcher import TitleTranscript, match_transcripts
+    eps = [Episode(1, 1, "Pilot", "A satellite falls on Rick in the forest."),
+           Episode(1, 2, "Two", "A moose walks down the main street of town."),
+           Episode(1, 3, "Three", "The radio station plays jazz all night long.")]
+    titles = [TitleTranscript("D", "T0", 1300, "The satellite fell in the forest on poor Rick, satellite parts everywhere.")]
+    m = match_transcripts(titles, eps)[0]
+    assert m.episode is eps[0] and m.runner_up is not None and m.runner_up is not eps[0]

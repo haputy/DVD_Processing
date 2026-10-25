@@ -111,3 +111,18 @@ def test_requests_have_a_timeout(client):
         _respond(mock_get, {"results": []})
         client.search_show("x")
     assert mock_get.call_args.kwargs["timeout"] == 30
+
+
+def test_search_movie_returns_title_and_year(monkeypatch):
+    from dvd_processor.tmdb import TmdbClient
+    client = TmdbClient("k")
+    seen = {}
+
+    def fake_get(path, **params):
+        seen["path"], seen["query"] = path, params["query"]
+        return {"results": [{"id": 68, "title": "Brazil", "release_date": "1985-02-20"},
+                            {"id": 9, "original_title": "Brasil", "release_date": ""}]}
+    monkeypatch.setattr(client, "_get", fake_get)
+    movies = client.search_movie("Brazil")
+    assert seen == {"path": "/search/movie", "query": "Brazil"}
+    assert [(m.tmdb_id, m.name, m.year) for m in movies] == [(68, "Brazil", "1985"), (9, "Brasil", "")]

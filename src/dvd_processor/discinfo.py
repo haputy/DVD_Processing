@@ -29,6 +29,9 @@ class DiscInfo:
     # label (every Northern Exposure disc is NORTHERN_EXPOSURE), so this is what tells a
     # re-rip of the same disc from the next disc in the set.
     titles: Optional[list] = None
+    # "tv" or "movie". TMDB numbers movies and TV shows separately, so a movie's id can equal
+    # a show's: a movie folder never counts as a disc of a show.
+    kind: str = "tv"
 
     def belongs_to(self, show: Optional[str], tmdb_id: Optional[int]) -> bool:
         """Same show: by TMDB id when both have one, else by name ignoring case."""
@@ -44,7 +47,7 @@ def rip_root(config=None) -> Path:
 
 def write_disc_info(folder: Path, show: str, tmdb_id: Optional[int], label: Optional[str] = None,
                     ripped: Optional[str] = None, complete: bool = True,
-                    season: Optional[int] = None, titles: Optional[list] = None) -> DiscInfo:
+                    season: Optional[int] = None, titles: Optional[list] = None, kind: str = "tv") -> DiscInfo:
     folder = Path(folder)
     info = DiscInfo(
         show=show,
@@ -54,6 +57,7 @@ def write_disc_info(folder: Path, show: str, tmdb_id: Optional[int], label: Opti
         complete=complete,
         season=season,
         titles=[int(x) for x in titles] if titles is not None else None,
+        kind=kind,
     )
     save_disc_info(folder, info)
     return info
@@ -77,7 +81,8 @@ def read_disc_info(folder: Path) -> Optional[DiscInfo]:
         return DiscInfo(show=d["show"], tmdb_id=d.get("tmdb_id"), label=d.get("label", Path(folder).name),
                         ripped=d.get("ripped", ""), complete=bool(d.get("complete", True)),
                         season=int(season) if season is not None else None,
-                        titles=[int(x) for x in d["titles"]] if d.get("titles") is not None else None)
+                        titles=[int(x) for x in d["titles"]] if d.get("titles") is not None else None,
+                        kind=d.get("kind") or "tv")
     except (json.JSONDecodeError, KeyError, OSError, ValueError, TypeError):
         return None
 
@@ -104,7 +109,7 @@ def disc_folders_for_show(show: Optional[str] = None, tmdb_id: Optional[int] = N
         if not folder.is_dir():
             continue
         info = read_disc_info(folder)
-        if info is None or not info.belongs_to(show, tmdb_id):
+        if info is None or info.kind != "tv" or not info.belongs_to(show, tmdb_id):
             continue
         if not info.complete:
             if on_skip:

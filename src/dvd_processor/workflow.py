@@ -75,10 +75,11 @@ def already_ripped(root: Path, label: str, show: str, tmdb_id: Optional[int],
     if fingerprint is not None and root.is_dir():
         for d in sorted(x for x in root.iterdir() if x.is_dir()):
             info = read_disc_info(d)
-            if info is not None and info.belongs_to(show, tmdb_id) and same_disc(info.titles, fingerprint):
+            if (info is not None and info.kind == "tv" and info.belongs_to(show, tmdb_id)
+                    and same_disc(info.titles, fingerprint)):
                 return d
     info = read_disc_info(p) if p.is_dir() else None
-    if info is None or not info.belongs_to(show, tmdb_id):
+    if info is None or info.kind != "tv" or not info.belongs_to(show, tmdb_id):
         return None
     return p if fingerprint is None or info.titles is None else None
 
