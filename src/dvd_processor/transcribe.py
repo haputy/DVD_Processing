@@ -7,6 +7,11 @@ are menus or extras and are not transcribed; a title whose length cannot be read
 transcribed anyway. Transcripts are cached as <disc>/transcripts/<key>.txt, where the key is
 the MP4-style name ("A1 T00") whether the MKV or the MP4 was used, so a rerun only does what
 is missing. Needs the "transcribe" extra.
+
+A show that is not in English (language other than "en") is translated to English as it is
+transcribed, with the multilingual TRANSLATE_MODEL, because the episode summaries it is matched
+against are English. Those transcripts are cached apart, in <cache>/translated-<language>, so an
+older English-model transcript of the same file is never reused.
 """
 import glob
 import json
@@ -23,10 +28,11 @@ from dvd_processor.transcript_matcher import TitleTranscript
 log = logging.getLogger(__name__)
 
 MODEL_NAME = "small.en"
+TRANSLATE_MODEL = "medium"  # multilingual; the .en models cannot translate
 MIN_TRANSCRIBE_SECONDS = 300
 TRANSCRIPTS_DIR = "transcripts"
 
-_model = None
+_models: dict = {}
 _dll_dirs_added = False
 
 
@@ -55,9 +61,9 @@ def add_cuda_dll_dirs() -> list[str]:
     return added
 
 
-def _load_whisper(device: str, compute_type: str):
+def _load_whisper(device: str, compute_type: str, name: str = MODEL_NAME):
     from faster_whisper import WhisperModel
-    return WhisperModel(MODEL_NAME, device=device, compute_type=compute_type)
+    return WhisperModel(name, device=device, compute_type=compute_type)
 
 
 def _warm_up(model) -> None:
@@ -68,26 +74,31 @@ def _warm_up(model) -> None:
     list(segments)
 
 
-def get_model(loader: Callable[[str, str], object] = _load_whisper):
-    """The whisper model, loaded once per process: GPU float16, else CPU int8."""
-    global _model
-    if _model is not None:
-        return _model
+def get_model(loader: Optional[Callable[[str, str], object]] = None, name: str = MODEL_NAME):
+    """The whisper model called name, loaded once per process: GPU float16, else CPU int8."""
+    if name in _models:
+        return _models[name]
+    if loader is None:
+        loader = lambda device, compute: _load_whisper(device, compute, name)
     add_cuda_dll_dirs()
     try:
         model = loader("cuda", "float16")
         _warm_up(model)
-        log.info("whisper %s on the GPU", MODEL_NAME)
+        log.info("whisper %s on the GPU", name)
     except Exception as exc:
         log.warning("CUDA not available (%s), using the CPU", exc)
         model = loader("cpu", "int8")
-    _model = model
-    return _model
+    _models[name] = model
+    return model
+
+
+def model_for(language: str = "en"):
+    """The model for a show in this language: small.en for English, else TRANSLATE_MODEL."""
+    return get_model(name=MODEL_NAME if language == "en" else TRANSLATE_MODEL)
 
 
 def reset_model() -> None:
-    global _model
-    _model = None
+    _models.clear()
 
 
 ENCODING_SUFFIX = ".encoding.mp4"  # HandBrakeEncoder's temporary output
@@ -166,17 +177,23 @@ def _write_text(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def transcribe_file(path: Path, model=None) -> str:
-    model = model if model is not None else get_model()
-    segments, _ = model.transcribe(str(path), vad_filter=True, beam_size=1)
+def transcribe_file(path: Path, model=None, language: str = "en") -> str:
+    """The title's dialogue as English text. Non-English audio is translated to English."""
+    model = model if model is not None else model_for(language)
+    if language == "en":
+        segments, _ = model.transcribe(str(path), vad_filter=True, beam_size=1)
+    else:
+        segments, _ = model.transcribe(str(path), vad_filter=True, beam_size=1,
+                                       language=language, task="translate")
     return " ".join(s.text.strip() for s in segments)
 
 
 def transcribe_files(files: list[Path], cache_dir: Path, disc: str,
                      get_duration: Callable[[Path], float] = duration,
-                     model_getter: Callable[[], object] = get_model,
+                     model_getter: Optional[Callable[[], object]] = None,
                      progress: Optional[Callable[[str], None]] = None,
-                     check_source: bool = False) -> list[TitleTranscript]:
+                     check_source: bool = False,
+                     language: str = "en") -> list[TitleTranscript]:
     """Transcribe what is missing among files, caching <cache_dir>/<title key>.txt, and
     return a TitleTranscript for each, in the order given, labelled with disc.
 
@@ -188,8 +205,14 @@ def transcribe_files(files: list[Path], cache_dir: Path, disc: str,
     Titles under MIN_TRANSCRIBE_SECONDS come back with empty text; a title whose duration
     cannot be read (0) is transcribed anyway. The model is only loaded when something needs
     transcribing.
+
+    A language other than "en" translates to English and caches under translated-<language>.
     """
     cache_dir = Path(cache_dir)
+    if language != "en":
+        cache_dir = cache_dir / f"translated-{language}"
+    if model_getter is None:
+        model_getter = lambda: model_for(language)
     out = []
     for f in files:
         f = Path(f)
@@ -208,7 +231,7 @@ def transcribe_files(files: list[Path], cache_dir: Path, disc: str,
         elif seconds == 0 or seconds >= MIN_TRANSCRIBE_SECONDS:
             if progress:
                 progress(f"transcribing {Path(disc).name}/{key} ({seconds / 60:.1f} min)")
-            text = transcribe_file(f, model_getter())
+            text = transcribe_file(f, model_getter(), language)
             txt = cache_dir / f"{key}.txt"
             _write_text(txt, text)
             if check_source:

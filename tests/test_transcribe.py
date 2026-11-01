@@ -183,3 +183,35 @@ def test_check_source_retranscribes_a_different_file_under_the_same_name(tmp_pat
     transcribe_files([f], cache, str(season), get_duration=lambda p: 1300.0,
                      model_getter=lambda: model, check_source=True)
     assert len(model.calls) == 2
+
+
+def test_other_language_translates_and_caches_apart(tmp_path):
+    from dvd_processor.transcribe import transcribe_files
+    season = tmp_path / "Season 4"
+    f = _touch(season / "Show S04 E01.mp4")
+    cache = tmp_path / "cache"
+    english = FakeModel()
+    transcribe_files([f], cache, str(season), get_duration=lambda p: 1300.0,
+                     model_getter=lambda: english, check_source=True)
+    german = FakeModel()
+    got = transcribe_files([f], cache, str(season), get_duration=lambda p: 1300.0,
+                           model_getter=lambda: german, check_source=True, language="de")
+    assert len(german.calls) == 1  # the English-model transcript is not reused
+    assert german.calls[0][1]["task"] == "translate" and german.calls[0][1]["language"] == "de"
+    assert "task" not in english.calls[0][1]
+    assert (cache / "translated-de" / "Show S04 E01.txt").exists()
+    assert got[0].text == "Hello there. General Kenobi."
+
+
+def test_models_are_loaded_once_per_name():
+    loads = []
+
+    def loader(device, compute):
+        loads.append(device)
+        return FakeModel(device)
+
+    a = get_model(loader, name="small.en")
+    b = get_model(loader, name="medium")
+    assert a is not b
+    assert get_model(loader, name="medium") is b
+    assert len(loads) == 2

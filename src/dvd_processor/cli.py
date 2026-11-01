@@ -387,7 +387,9 @@ def match(show_name, tmdb_id, season, yes, dest_root):
 @click.option("--season", type=int, default=None, help="Only consider this season's episodes")
 @click.option("--yes", "-y", is_flag=True, help="Accept the match and rename without asking")
 @click.option("--dest-root", default=None, help="Use this TV root instead of the NAS (for testing)")
-def fix(show_name, tmdb_id, nas_folder, season, yes, dest_root):
+@click.option("--language", default="en", show_default=True,
+              help='The show\'s spoken language, e.g. "de". Not "en" translates the dialogue to English first')
+def fix(show_name, tmdb_id, nas_folder, season, yes, dest_root, language):
     """Rename a show already on the NAS by matching its files' dialogue."""
     config = Config()
     root = choose_root(dest_root, config)
@@ -405,9 +407,10 @@ def fix(show_name, tmdb_id, nas_folder, season, yes, dest_root):
     nas = workflow.scan_nas_show(Path(show_dir), season)
     transcribe_files = _file_transcriber()
     titles = []
+    lang = {} if language == "en" else {"language": language}
     for folder, videos in nas.seasons:
         titles += transcribe_files(videos, workflow.nas_transcript_dir(show.name, folder), str(folder),
-                                   progress=say, check_source=True)
+                                   progress=say, check_source=True, **lang)
     if not titles:
         console.print("[red]No video files in Season folders.[/red]")
         sys.exit(1)
